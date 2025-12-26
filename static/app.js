@@ -928,6 +928,7 @@ function render() {
         label.setAttribute("y", n.y + r + 14);
         label.setAttribute("font-size", "12");
         label.setAttribute("text-anchor", "middle");
+        label.setAttribute("class", "node-label");
         label.dataset.nodeId = n.id;
         viewport.appendChild(label);
     });

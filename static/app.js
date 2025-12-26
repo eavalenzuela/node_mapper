@@ -575,6 +575,14 @@ async function loadGraphFromBackend() {
 
 // ---------- SIDEBAR UI ----------
 
+// collapsible panels
+document.querySelectorAll(".panel .panel-toggle").forEach(toggle => {
+    toggle.addEventListener("click", () => {
+        const panel = toggle.closest(".panel");
+        if (panel) panel.classList.toggle("open");
+    });
+});
+
 // mode buttons
 document.querySelectorAll("#sidebar button[data-mode]").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -624,8 +632,19 @@ document.getElementById("search-input").addEventListener("input", e => {
 // node editor
 function updateNodeEditor() {
     const editor = document.getElementById("node-editor");
+    const empty = document.getElementById("node-empty-state");
+    const chip = document.getElementById("node-selection-chip");
     const disabled = !selectedNodeId || !nodes[selectedNodeId];
-    editor.style.opacity = disabled ? "0.4" : "1";
+
+    if (chip) {
+        chip.textContent = disabled ? "No node selected" : `Node: ${nodes[selectedNodeId].label || selectedNodeId}`;
+        chip.classList.toggle("chip-active", !disabled);
+    }
+
+    if (editor && empty) {
+        editor.classList.toggle("hidden", disabled);
+        empty.classList.toggle("hidden", !disabled);
+    }
 
     if (disabled) return;
 
@@ -654,9 +673,20 @@ document.getElementById("apply-node-edit").addEventListener("click", () => {
 // edge editor
 function updateEdgeEditor() {
     const editor = document.getElementById("edge-editor");
+    const empty = document.getElementById("edge-empty-state");
+    const chip = document.getElementById("edge-selection-chip");
     const e = edges.find(ed => ed.id === selectedEdgeId);
     const disabled = !e;
-    editor.style.opacity = disabled ? "0.4" : "1";
+
+    if (chip) {
+        chip.textContent = disabled ? "No edge selected" : `Edge: ${selectedEdgeId}`;
+        chip.classList.toggle("chip-active", !disabled);
+    }
+
+    if (editor && empty) {
+        editor.classList.toggle("hidden", disabled);
+        empty.classList.toggle("hidden", !disabled);
+    }
 
     if (disabled) return;
 
@@ -1360,10 +1390,21 @@ function updateNodeBoxMembership(nodeId) {
 
 function updateBoxEditor() {
     const editor = document.getElementById("box-editor");
+    const empty = document.getElementById("box-empty-state");
+    const chip = document.getElementById("box-selection-chip");
     if (!editor) return;
 
     const disabled = !selectedBoxId || !boxes[selectedBoxId];
-    editor.style.opacity = disabled ? "0.4" : "1";
+
+    if (chip) {
+        chip.textContent = disabled ? "No box selected" : `Box: ${boxes[selectedBoxId].label || selectedBoxId}`;
+        chip.classList.toggle("chip-active", !disabled);
+    }
+
+    if (empty) {
+        editor.classList.toggle("hidden", disabled);
+        empty.classList.toggle("hidden", !disabled);
+    }
 
     if (disabled) return;
 
@@ -1414,6 +1455,9 @@ function syncLayoutControlsFromSettings() {
     setNumberInputValue("weighted-tiers", opts.weightedTree.tiers);
     setNumberInputValue("weighted-tier-spacing", opts.weightedTree.tierSpacing);
     setNumberInputValue("weighted-node-spacing", opts.weightedTree.nodeSpacing);
+
+    const layoutValue = layoutSettings.selectedLayout || (layoutSelect ? layoutSelect.value : "manual");
+    updateLayoutSettingsVisibility(layoutValue);
 }
 
 function syncLayoutSettingsFromInputs() {
@@ -1440,6 +1484,22 @@ function syncLayoutSettingsFromInputs() {
     const routingSelect = document.getElementById("edge-routing");
     if (routingSelect) {
         layoutSettings.edgeRouting = routingSelect.value || layoutSettings.edgeRouting;
+    }
+}
+
+function updateLayoutSettingsVisibility(selectedLayout) {
+    const layoutValue = selectedLayout || (document.getElementById("layout-select")?.value || "manual");
+    const sections = document.querySelectorAll(".layout-settings");
+    sections.forEach(section => {
+        const target = section.dataset.layout;
+        const shouldShow = target === layoutValue || target === "edges";
+        section.classList.toggle("active", !!shouldShow);
+    });
+
+    const hint = document.getElementById("layout-active-label");
+    if (hint) {
+        const pretty = layoutValue === "weightedTree" ? "Weighted tree" : layoutValue.charAt(0).toUpperCase() + layoutValue.slice(1);
+        hint.textContent = `Showing options for ${pretty} layout.`;
     }
 }
 
@@ -1472,6 +1532,7 @@ document.getElementById("apply-layout").addEventListener("click", () => {
 document.getElementById("layout-select").addEventListener("change", e => {
     layoutSettings.selectedLayout = e.target.value;
     saveLayoutSettingsToStorage();
+    updateLayoutSettingsVisibility(e.target.value);
 });
 
 const layoutInputs = [

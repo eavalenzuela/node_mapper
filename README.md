@@ -6,11 +6,22 @@ A lightweight Flask app that serves an in-browser graph editor. The editor lets 
 - **Interactive graph canvas:** Create, drag, delete, and connect nodes with mouse interactions.
 - **Grouping with boxes:** Draw resizable boxes that move their contained nodes together.
 - **Property editing:** Update labels, colors, sizes, descriptions, and grouping metadata for nodes; edit edge labels, widths, colors, and directionality; rename boxes.
-- **Layouts:** Switch between manual positioning, force-directed, grid, circular, hierarchical, and weighted tree layouts (`static/layout.js`).
+- **Layouts:** Switch between manual positioning, force-directed, grid, circular, hierarchical, and weighted tree layouts (`static/layout.js`) with tunable spacing/radius/force controls.
+- **Edge routing:** Choose straight or orthogonal edge routing to reduce visual clutter on dense graphs.
 - **Search and filtering:** Hide non-matching nodes by label, description, or group.
 - **Undo/redo:** In-browser undo stack for most actions.
-- **Autosave and file I/O:** LocalStorage autosave plus export/import of graph JSON files.
+- **Autosave and file I/O:** LocalStorage autosave plus export/import of graph JSON files, including layout settings and routing preferences.
 - **Mini-map:** Overview map that reflects the current viewport and can re-center the main canvas.
+
+## Layout modes and parameters
+- **Manual:** Drag items directly. Use the **Edges → Routing style** control to toggle straight vs. orthogonal segments.
+- **Force layout:** Configure repulsion strength, ideal edge length, and iteration count for faster or looser packing.
+- **Grid layout:** Control horizontal/vertical spacing for both boxes and unboxed nodes.
+- **Circular layout:** Set inner and outer radii for box and node rings.
+- **Hierarchical layout:** Adjust node spacing horizontally and vertically across BFS-like tiers.
+- **Weighted tree:** Set tier count along with tier and node spacing for degree-weighted layers.
+
+Layout and routing settings persist in `localStorage` and are bundled into JSON exports/imports so collaborators can reproduce the same view.
 
 ## Project structure
 - `node_mapper.py` — Flask server exposing JSON endpoints and serving static assets.
@@ -48,4 +59,3 @@ The server uses an in-memory graph (`GRAPH` in `node_mapper.py`). Data is not pe
 - Apply **Layouts** to reposition content automatically; manual tweaks are preserved until the next layout run.
 - The **Mini-map** is clickable—use it to jump the viewport to a new area.
 - Autosave writes to `localStorage` under the `graph-autosave-v1` key; use **Load Autosave** to restore it after a refresh.
-

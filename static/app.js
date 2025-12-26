@@ -54,10 +54,105 @@ let nodeCounter = 0;
 let edgeCounter = 0;
 let boxCounter = 0;
 
+const LAYOUT_SETTINGS_KEY = "graph-layout-settings-v1";
+
+function defaultLayoutSettings() {
+    return {
+        selectedLayout: "manual",
+        edgeRouting: "straight",
+        options: {
+            force: {
+                iterations: 150,
+                repulsion: 20000,
+                idealEdgeLength: 220,
+                separationPadding: 40,
+                separationIterations: 30
+            },
+            grid: {
+                boxHMargin: 400,
+                boxVMargin: 280,
+                boxStartX: 100,
+                boxStartY: 100,
+                separationPadding: 40,
+                separationIterations: 50,
+                nodeHMargin: 150,
+                nodeVMargin: 150
+            },
+            circle: {
+                outerRadius: 600,
+                innerRadius: 350,
+                separationPadding: 40,
+                separationIterations: 50
+            },
+            hierarchical: {
+                boxHMargin: 400,
+                boxVMargin: 260,
+                boxStartX: 150,
+                boxStartY: 80,
+                separationPadding: 40,
+                separationIterations: 50,
+                nodeHMargin: 180,
+                nodeVMargin: 120,
+                nodeStartX: 150,
+                nodeStartY: 200
+            },
+            weightedTree: {
+                boxStartX: 100,
+                boxStartY: 100,
+                boxHMargin: 400,
+                boxVMargin: 260,
+                separationPadding: 40,
+                separationIterations: 30,
+                tiers: 4,
+                tierSpacing: 180,
+                nodeSpacing: 150,
+                nodeStartX: 200
+            }
+        }
+    };
+}
+
+let layoutSettings = defaultLayoutSettings();
+
+function normalizeLayoutSettings(incoming = {}) {
+    const base = defaultLayoutSettings();
+    const payload = incoming || {};
+    base.selectedLayout = payload.selectedLayout || payload.type || base.selectedLayout;
+    base.edgeRouting = payload.edgeRouting || payload.routing || base.edgeRouting;
+
+    const optionSource = payload.options || payload;
+    Object.keys(base.options).forEach(key => {
+        base.options[key] = {
+            ...base.options[key],
+            ...(optionSource[key] || {})
+        };
+    });
+
+    return base;
+}
+
+function loadLayoutSettingsFromStorage() {
+    const raw = localStorage.getItem(LAYOUT_SETTINGS_KEY);
+    if (!raw) return defaultLayoutSettings();
+    try {
+        const parsed = JSON.parse(raw);
+        return normalizeLayoutSettings(parsed);
+    } catch (e) {
+        console.warn("Could not parse stored layout settings", e);
+        return defaultLayoutSettings();
+    }
+}
+
+function saveLayoutSettingsToStorage() {
+    localStorage.setItem(LAYOUT_SETTINGS_KEY, JSON.stringify(layoutSettings));
+}
+
+layoutSettings = loadLayoutSettingsFromStorage();
+
 // ---------- UTILITIES ----------
 
 function snapshot() {
-    return JSON.stringify({ nodes, edges, boxes });
+    return JSON.stringify({ nodes, edges, boxes, layoutSettings });
 }
 
 function restoreFromSnapshot(json) {
@@ -65,11 +160,47 @@ function restoreFromSnapshot(json) {
     nodes = data.nodes || {};
     edges = data.edges || [];
     boxes = data.boxes || {};
+    layoutSettings = normalizeLayoutSettings(data.layoutSettings);
+    nodeCounter = Object.keys(nodes).length;
+    edgeCounter = edges.length;
+    boxCounter = Object.keys(boxes).length;
+    syncLayoutControlsFromSettings();
+    saveLayoutSettingsToStorage();
 }
 
 function pushUndo() {
     undoStack.push(snapshot());
     redoStack.length = 0;
+}
+
+function applyGraphPayload(graph = {}) {
+    nodes = graph.nodes || {};
+    edges = (graph.edges || []).map((ed, i) => ({
+        id: ed.id || `e${i}`,
+        source: ed.source,
+        target: ed.target,
+        label: ed.label || "",
+        color: ed.color || "#888888",
+        width: ed.width || 2,
+        directed: !!ed.directed
+    }));
+
+    boxes = graph.boxes || {};
+
+    const incomingLayout = graph.layoutSettings || graph.layout;
+    if (incomingLayout) {
+        layoutSettings = normalizeLayoutSettings(incomingLayout);
+        saveLayoutSettingsToStorage();
+    }
+
+    nodeCounter = Object.keys(nodes).length;
+    edgeCounter = edges.length;
+    boxCounter = Object.keys(boxes).length;
+
+    selectedNodeId = null;
+    selectedEdgeId = null;
+    selectedBoxId = null;
+    syncLayoutControlsFromSettings();
 }
 
 function screenToWorld(clientX, clientY) {
@@ -99,7 +230,8 @@ function updateAutosaveInfo() {
 function autosave() {
     const payload = {
         timestamp: Date.now(),
-        graph: { nodes, edges, boxes }
+        graph: { nodes, edges, boxes },
+        layoutSettings
     };
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
     updateAutosaveInfo();
@@ -143,26 +275,7 @@ async function loadGraphFromBackend() {
         if (!res.ok) throw new Error("HTTP " + res.status);
         const graph = await res.json();
 
-        nodes = graph.nodes || {};
-        edges = (graph.edges || []).map((ed, i) => ({
-            id: ed.id || `e${i}`,
-            source: ed.source,
-            target: ed.target,
-            label: ed.label || "",
-            color: ed.color || "#888888",
-            width: ed.width || 2,
-            directed: !!ed.directed
-        }));
-
-        boxes = graph.boxes || {};
-
-        nodeCounter = Object.keys(nodes).length;
-        edgeCounter = edges.length;
-        boxCounter = Object.keys(boxes).length;
-
-        selectedNodeId = null;
-        selectedEdgeId = null;
-        selectedBoxId = null;
+        applyGraphPayload(graph);
         undoStack.length = 0;
         redoStack.length = 0;
 
@@ -172,6 +285,10 @@ async function loadGraphFromBackend() {
         nodes = {};
         edges = [];
         boxes = {};
+        nodeCounter = 0;
+        edgeCounter = 0;
+        boxCounter = 0;
+        syncLayoutControlsFromSettings();
         render();
     }
 }
@@ -303,7 +420,7 @@ function moveBoxAndChildren(boxId, newX, newY) {
 
 // save / load JSON
 document.getElementById("save-json").addEventListener("click", () => {
-    const graph = { nodes, edges, boxes };
+    const graph = { nodes, edges, boxes, layoutSettings };
     const blob = new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -318,25 +435,7 @@ document.getElementById("load-json").addEventListener("change", e => {
     reader.onload = () => {
         pushUndo();
         const graph = JSON.parse(reader.result);
-        nodes = graph.nodes || {};
-        edges = (graph.edges || []).map((ed, i) => ({
-            id: ed.id || `e${i}`,
-            source: ed.source,
-            target: ed.target,
-            label: ed.label || "",
-            color: ed.color || "#888888",
-            width: ed.width || 2,
-            directed: !!ed.directed
-        }));
-        boxes = graph.boxes || {};
-
-        nodeCounter = Object.keys(nodes).length;
-        edgeCounter = edges.length;
-        boxCounter = Object.keys(boxes).length;
-
-        selectedNodeId = null;
-        selectedEdgeId = null;
-        selectedBoxId = null;
+        applyGraphPayload(graph);
         render();
     };
     reader.readAsText(file);
@@ -350,12 +449,10 @@ document.getElementById("load-autosave").addEventListener("click", () => {
         pushUndo();
         const data = JSON.parse(raw);
         const g = data.graph || {};
-        nodes = g.nodes || {};
-        edges = g.edges || [];
-        boxes = g.boxes || {};
-        selectedNodeId = null;
-        selectedEdgeId = null;
-        selectedBoxId = null;
+        applyGraphPayload({
+            ...g,
+            layoutSettings: data.layoutSettings || g.layoutSettings
+        });
         render();
     } catch (e) {
         console.error("Error reading autosave", e);
@@ -745,10 +842,91 @@ function updateBoxEditor() {
     document.getElementById("edit-box-label").value = b.label;
 }
 
+function getNumberInputValue(id, fallback) {
+    const el = document.getElementById(id);
+    if (!el) return fallback;
+    const val = parseFloat(el.value);
+    return Number.isFinite(val) ? val : fallback;
+}
+
+function setNumberInputValue(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.value = value;
+}
+
+function syncLayoutControlsFromSettings() {
+    const layoutSelect = document.getElementById("layout-select");
+    if (layoutSelect) {
+        layoutSelect.value = layoutSettings.selectedLayout || "manual";
+    }
+
+    const routingSelect = document.getElementById("edge-routing");
+    if (routingSelect) {
+        routingSelect.value = layoutSettings.edgeRouting || "straight";
+    }
+
+    const opts = layoutSettings.options;
+    setNumberInputValue("force-repulsion", opts.force.repulsion);
+    setNumberInputValue("force-ideal", opts.force.idealEdgeLength);
+    setNumberInputValue("force-iterations", opts.force.iterations);
+
+    setNumberInputValue("grid-box-hmargin", opts.grid.boxHMargin);
+    setNumberInputValue("grid-box-vmargin", opts.grid.boxVMargin);
+    setNumberInputValue("grid-node-hmargin", opts.grid.nodeHMargin);
+    setNumberInputValue("grid-node-vmargin", opts.grid.nodeVMargin);
+
+    setNumberInputValue("circle-outer-radius", opts.circle.outerRadius);
+    setNumberInputValue("circle-inner-radius", opts.circle.innerRadius);
+
+    setNumberInputValue("hier-node-hmargin", opts.hierarchical.nodeHMargin);
+    setNumberInputValue("hier-node-vmargin", opts.hierarchical.nodeVMargin);
+
+    setNumberInputValue("weighted-tiers", opts.weightedTree.tiers);
+    setNumberInputValue("weighted-tier-spacing", opts.weightedTree.tierSpacing);
+    setNumberInputValue("weighted-node-spacing", opts.weightedTree.nodeSpacing);
+}
+
+function syncLayoutSettingsFromInputs() {
+    const opts = layoutSettings.options;
+    opts.force.repulsion = Math.max(0, getNumberInputValue("force-repulsion", opts.force.repulsion));
+    opts.force.idealEdgeLength = Math.max(0, getNumberInputValue("force-ideal", opts.force.idealEdgeLength));
+    opts.force.iterations = Math.max(1, Math.round(getNumberInputValue("force-iterations", opts.force.iterations)));
+
+    opts.grid.boxHMargin = Math.max(0, getNumberInputValue("grid-box-hmargin", opts.grid.boxHMargin));
+    opts.grid.boxVMargin = Math.max(0, getNumberInputValue("grid-box-vmargin", opts.grid.boxVMargin));
+    opts.grid.nodeHMargin = Math.max(0, getNumberInputValue("grid-node-hmargin", opts.grid.nodeHMargin));
+    opts.grid.nodeVMargin = Math.max(0, getNumberInputValue("grid-node-vmargin", opts.grid.nodeVMargin));
+
+    opts.circle.outerRadius = Math.max(0, getNumberInputValue("circle-outer-radius", opts.circle.outerRadius));
+    opts.circle.innerRadius = Math.max(0, getNumberInputValue("circle-inner-radius", opts.circle.innerRadius));
+
+    opts.hierarchical.nodeHMargin = Math.max(0, getNumberInputValue("hier-node-hmargin", opts.hierarchical.nodeHMargin));
+    opts.hierarchical.nodeVMargin = Math.max(0, getNumberInputValue("hier-node-vmargin", opts.hierarchical.nodeVMargin));
+
+    opts.weightedTree.tiers = Math.max(1, Math.round(getNumberInputValue("weighted-tiers", opts.weightedTree.tiers)));
+    opts.weightedTree.tierSpacing = Math.max(0, getNumberInputValue("weighted-tier-spacing", opts.weightedTree.tierSpacing));
+    opts.weightedTree.nodeSpacing = Math.max(0, getNumberInputValue("weighted-node-spacing", opts.weightedTree.nodeSpacing));
+
+    const routingSelect = document.getElementById("edge-routing");
+    if (routingSelect) {
+        layoutSettings.edgeRouting = routingSelect.value || layoutSettings.edgeRouting;
+    }
+}
+
 // ---------- LAYOUTS ----------
 
 document.getElementById("apply-layout").addEventListener("click", () => {
     const type = document.getElementById("layout-select").value; // "grid" | "circle" | "hierarchical" | "force"
+
+    syncLayoutSettingsFromInputs();
+    layoutSettings.selectedLayout = type;
+    saveLayoutSettingsToStorage();
+
+    if (type === "manual") {
+        render();
+        return;
+    }
 
     pushUndo();
 
@@ -757,12 +935,88 @@ document.getElementById("apply-layout").addEventListener("click", () => {
         edges,
         boxes,
         view
-    });
+    }, layoutSettings.options[type] || {});
 
     render();
 });
 
+document.getElementById("layout-select").addEventListener("change", e => {
+    layoutSettings.selectedLayout = e.target.value;
+    saveLayoutSettingsToStorage();
+});
+
+const layoutInputs = [
+    "force-repulsion",
+    "force-ideal",
+    "force-iterations",
+    "grid-box-hmargin",
+    "grid-box-vmargin",
+    "grid-node-hmargin",
+    "grid-node-vmargin",
+    "circle-outer-radius",
+    "circle-inner-radius",
+    "hier-node-hmargin",
+    "hier-node-vmargin",
+    "weighted-tiers",
+    "weighted-tier-spacing",
+    "weighted-node-spacing"
+];
+
+layoutInputs.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+        syncLayoutSettingsFromInputs();
+        saveLayoutSettingsToStorage();
+    });
+});
+
+const edgeRoutingSelect = document.getElementById("edge-routing");
+if (edgeRoutingSelect) {
+    edgeRoutingSelect.addEventListener("change", () => {
+        syncLayoutSettingsFromInputs();
+        saveLayoutSettingsToStorage();
+        render();
+    });
+}
+
 // ---------- RENDER ----------
+
+function getEdgePointsForRouting(src, tgt) {
+    if (layoutSettings.edgeRouting === "orthogonal") {
+        const horizontalFirst = Math.abs(src.x - tgt.x) > Math.abs(src.y - tgt.y);
+        if (horizontalFirst) {
+            const midX = (src.x + tgt.x) / 2;
+            return [
+                { x: src.x, y: src.y },
+                { x: midX, y: src.y },
+                { x: midX, y: tgt.y },
+                { x: tgt.x, y: tgt.y }
+            ];
+        } else {
+            const midY = (src.y + tgt.y) / 2;
+            return [
+                { x: src.x, y: src.y },
+                { x: src.x, y: midY },
+                { x: tgt.x, y: midY },
+                { x: tgt.x, y: tgt.y }
+            ];
+        }
+    }
+
+    return [
+        { x: src.x, y: src.y },
+        { x: tgt.x, y: tgt.y }
+    ];
+}
+
+function getEdgeLabelAnchor(points) {
+    if (points.length === 0) return { x: 0, y: 0 };
+    const midIndex = Math.floor((points.length - 1) / 2);
+    const a = points[midIndex];
+    const b = points[midIndex + 1] || a;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+}
 
 function render() {
     svg.innerHTML = "";
@@ -855,49 +1109,58 @@ function render() {
         if (!src || !tgt) return;
         if (!visibleNodes[edge.source] || !visibleNodes[edge.target]) return;
 
-        const line = document.createElementNS(NS, "line");
-        line.setAttribute("x1", src.x);
-        line.setAttribute("y1", src.y);
-        line.setAttribute("x2", tgt.x);
-        line.setAttribute("y2", tgt.y);
-        line.setAttribute("stroke", edge.color || "#888");
-        line.setAttribute("stroke-width", edge.width || 2);
-        line.dataset.edgeId = edge.id;
+        const points = getEdgePointsForRouting(src, tgt);
+        const strokeColor = edge.id === selectedEdgeId ? "#ff6600" : (edge.color || "#888");
+        const strokeWidth = edge.width || 2;
+        let edgeElement;
 
-        if (edge.id === selectedEdgeId) {
-            line.setAttribute("stroke", "#ff6600");
+        if (points.length > 2) {
+            const poly = document.createElementNS(NS, "polyline");
+            poly.setAttribute("points", points.map(p => `${p.x},${p.y}`).join(" "));
+            poly.setAttribute("fill", "none");
+            edgeElement = poly;
+        } else {
+            const line = document.createElementNS(NS, "line");
+            line.setAttribute("x1", points[0].x);
+            line.setAttribute("y1", points[0].y);
+            line.setAttribute("x2", points[1].x);
+            line.setAttribute("y2", points[1].y);
+            edgeElement = line;
         }
 
-        viewport.appendChild(line);
+        edgeElement.setAttribute("stroke", strokeColor);
+        edgeElement.setAttribute("stroke-width", strokeWidth);
+        edgeElement.dataset.edgeId = edge.id;
+        edgeElement.setAttribute("pointer-events", "stroke");
+        viewport.appendChild(edgeElement);
 
-        if (edge.directed) {
-            const mx = (src.x + tgt.x) / 2;
-            const my = (src.y + tgt.y) / 2;
-            const dx = tgt.x - src.x;
-            const dy = tgt.y - src.y;
+        if (edge.directed && points.length >= 2) {
+            const tail = points[points.length - 2];
+            const head = points[points.length - 1];
+            const dx = head.x - tail.x;
+            const dy = head.y - tail.y;
             const len = Math.sqrt(dx * dx + dy * dy) || 1;
             const ux = dx / len;
             const uy = dy / len;
             const size = 8;
-            const x1 = mx - ux * size + uy * size * 0.5;
-            const y1 = my - uy * size - ux * size * 0.5;
-            const x2 = mx - ux * size - uy * size * 0.5;
-            const y2 = my - uy * size + ux * size * 0.5;
+            const x1 = head.x - ux * size + uy * size * 0.6;
+            const y1 = head.y - uy * size - ux * size * 0.6;
+            const x2 = head.x - ux * size - uy * size * 0.6;
+            const y2 = head.y - uy * size + ux * size * 0.6;
 
             const arrow = document.createElementNS(NS, "polygon");
-            arrow.setAttribute("points", `${mx},${my} ${x1},${y1} ${x2},${y2}`);
-            arrow.setAttribute("fill", edge.color || "#888");
+            arrow.setAttribute("points", `${head.x},${head.y} ${x1},${y1} ${x2},${y2}`);
+            arrow.setAttribute("fill", strokeColor);
             arrow.dataset.edgeId = edge.id;
             viewport.appendChild(arrow);
         }
 
         if (edge.label) {
-            const mx = (src.x + tgt.x) / 2;
-            const my = (src.y + tgt.y) / 2;
+            const mid = getEdgeLabelAnchor(points);
             const text = document.createElementNS(NS, "text");
             text.textContent = edge.label;
-            text.setAttribute("x", mx);
-            text.setAttribute("y", my - 6);
+            text.setAttribute("x", mid.x);
+            text.setAttribute("y", mid.y - 6);
             text.setAttribute("font-size", "11");
             text.setAttribute("text-anchor", "middle");
             text.setAttribute("fill", "#444");
@@ -1097,6 +1360,7 @@ if (minimap) {
 
 // ---------- INIT ----------
 
+syncLayoutControlsFromSettings();
 initTheme();
 updateAutosaveInfo();
 loadGraphFromBackend();

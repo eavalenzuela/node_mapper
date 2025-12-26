@@ -2,6 +2,7 @@
 <html>
 <head>
     <title>Graph Editor</title>
+    <base href="/">
     <link rel="stylesheet" href="static/styles.css">
 </head>
 <body>
@@ -105,6 +106,73 @@
                 <option value="weightedTree">Weighted Tree</option>
             </select>
             <button id="apply-layout">Apply Layout</button>
+
+            <div class="layout-settings">
+                <h4>Force options</h4>
+                <label>Repulsion</label>
+                <input id="force-repulsion" type="number" min="0" step="1000">
+
+                <label>Ideal edge length</label>
+                <input id="force-ideal" type="number" min="10" step="10">
+
+                <label>Iterations</label>
+                <input id="force-iterations" type="number" min="10" step="10">
+            </div>
+
+            <div class="layout-settings">
+                <h4>Grid spacing</h4>
+                <label>Box horizontal spacing</label>
+                <input id="grid-box-hmargin" type="number" min="50" step="10">
+
+                <label>Box vertical spacing</label>
+                <input id="grid-box-vmargin" type="number" min="50" step="10">
+
+                <label>Node horizontal spacing</label>
+                <input id="grid-node-hmargin" type="number" min="20" step="10">
+
+                <label>Node vertical spacing</label>
+                <input id="grid-node-vmargin" type="number" min="20" step="10">
+            </div>
+
+            <div class="layout-settings">
+                <h4>Circle layout</h4>
+                <label>Outer radius</label>
+                <input id="circle-outer-radius" type="number" min="50" step="10">
+
+                <label>Inner radius</label>
+                <input id="circle-inner-radius" type="number" min="30" step="10">
+            </div>
+
+            <div class="layout-settings">
+                <h4>Hierarchical layout</h4>
+                <label>Node horizontal spacing</label>
+                <input id="hier-node-hmargin" type="number" min="20" step="10">
+
+                <label>Node vertical spacing</label>
+                <input id="hier-node-vmargin" type="number" min="20" step="10">
+            </div>
+
+            <div class="layout-settings">
+                <h4>Weighted tree layout</h4>
+                <label>Tier count</label>
+                <input id="weighted-tiers" type="number" min="1" step="1">
+
+                <label>Tier spacing</label>
+                <input id="weighted-tier-spacing" type="number" min="20" step="10">
+
+                <label>Node spacing</label>
+                <input id="weighted-node-spacing" type="number" min="20" step="10">
+            </div>
+
+            <div class="layout-settings">
+                <h4>Edges</h4>
+                <label>Routing style</label>
+                <select id="edge-routing">
+                    <option value="straight">Straight lines</option>
+                    <option value="orthogonal">Orthogonal elbows</option>
+                </select>
+                <small>Use orthogonal routing to reduce crossings and clutter.</small>
+            </div>
         </div>
 
         <div class="section">

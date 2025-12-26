@@ -58,7 +58,7 @@ html, body {
 /* Sidebar */
 
 #sidebar {
-    width: 260px;
+    width: 320px;
     background: var(--sidebar-bg);
     border-right: 1px solid var(--sidebar-border);
     padding: 12px;
@@ -72,10 +72,100 @@ html, body {
     margin-top: 0;
 }
 
-.section {
-    margin-bottom: 16px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--section-border);
+
+.panel {
+    border: 1px solid var(--section-border);
+    border-radius: 10px;
+    margin-bottom: 12px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.35);
+}
+
+body.dark .panel {
+    background: rgba(15, 23, 42, 0.6);
+}
+
+.panel-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background: transparent;
+    border: none;
+    color: var(--sidebar-text);
+    padding: 12px;
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.panel-titles {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.eyebrow {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 11px;
+    color: var(--small-text);
+}
+
+.title {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.title-sm {
+    font-size: 15px;
+    font-weight: 700;
+}
+
+.chevron {
+    border: solid var(--small-text);
+    border-width: 0 2px 2px 0;
+    padding: 4px;
+    transform: rotate(45deg);
+    transition: transform 0.2s ease;
+}
+
+.panel.open .chevron {
+    transform: rotate(225deg);
+}
+
+.panel-content {
+    padding: 0 12px 12px 12px;
+    display: none;
+}
+
+.panel.open .panel-content {
+    display: block;
+}
+
+.subsection {
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid var(--section-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.25);
+}
+
+body.dark .subsection {
+    background: rgba(17, 24, 39, 0.6);
+}
+
+.subsection-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.subsection-header h4 {
+    margin: 0;
 }
 
 #sidebar button {
@@ -118,6 +208,10 @@ html, body {
     min-height: 50px;
 }
 
+.muted {
+    color: var(--small-text);
+}
+
 .input-label {
     font-weight: 600;
     font-size: 12px;
@@ -148,16 +242,90 @@ html, body {
     margin-bottom: 2px;
 }
 
+.mode-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 8px;
+}
+
+.button-row {
+    display: flex;
+    gap: 8px;
+}
+
+.button-row.two button {
+    flex: 1;
+}
+
+.property-card {
+    border: 1px solid var(--section-border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+    background: rgba(255, 255, 255, 0.25);
+}
+
+body.dark .property-card {
+    background: rgba(17, 24, 39, 0.6);
+}
+
+.property-card-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.selection-chip {
+    border-radius: 999px;
+    padding: 4px 10px;
+    border: 1px dashed var(--section-border);
+    font-size: 12px;
+    color: var(--small-text);
+}
+
+.selection-chip.chip-active {
+    border-style: solid;
+    border-color: var(--button-active-border);
+    color: var(--button-active-text);
+    background: var(--button-active-bg);
+}
+
+.empty-state {
+    background: rgba(0, 0, 0, 0.03);
+    border: 1px dashed var(--section-border);
+    border-radius: 8px;
+    padding: 10px;
+    font-size: 13px;
+    color: var(--small-text);
+}
+
+body.dark .empty-state {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.property-form {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
 .layout-settings {
     border: 1px solid var(--section-border);
     padding: 8px;
     border-radius: 6px;
     margin-top: 8px;
+    display: none;
 }
 
-.layout-settings h4 {
-    margin: 0 0 6px 0;
-    font-size: 13px;
+.layout-settings.active {
+    display: block;
+}
+
+.layout-settings-header {
+    font-weight: 700;
+    margin-bottom: 6px;
 }
 
 .layout-settings label {
@@ -165,6 +333,23 @@ html, body {
     font-size: 12px;
     margin-top: 4px;
     margin-bottom: 2px;
+}
+
+.layout-row {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    margin: 6px 0 2px;
+}
+
+.layout-select {
+    flex: 1;
+}
+
+.checkbox-inline {
+    display: flex !important;
+    align-items: center;
+    gap: 6px;
 }
 
 /* Theme pill */
@@ -268,4 +453,8 @@ small {
 .error-text {
     color: #b91c1c;
     font-size: 12px;
+}
+
+.hidden {
+    display: none !important;
 }

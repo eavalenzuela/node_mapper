@@ -11,231 +11,328 @@
     <div id="sidebar">
         <h2>Graph Editor</h2>
 
-        <div class="section">
-            <div class="theme-header">
-                <h3>Theme</h3>
-                <div class="theme-pill" id="theme-toggle" role="switch" aria-checked="false" aria-label="Toggle dark mode">
-                    <span class="pill-option">Light</span>
-                    <span class="pill-option">Dark</span>
-                    <span class="pill-handle"></span>
+        <div class="panel open" id="panel-workspace">
+            <button class="panel-toggle" type="button">
+                <div class="panel-titles">
+                    <div class="eyebrow">Setup</div>
+                    <div class="title">Workspace</div>
+                </div>
+                <span class="chevron" aria-hidden="true"></span>
+            </button>
+            <div class="panel-content">
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>Theme</h4>
+                    </div>
+                    <div class="theme-header">
+                        <div class="theme-pill" id="theme-toggle" role="switch" aria-checked="false" aria-label="Toggle dark mode">
+                            <span class="pill-option">Light</span>
+                            <span class="pill-option">Dark</span>
+                            <span class="pill-handle"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>Modes</h4>
+                        <small>Choose how clicks behave on the canvas.</small>
+                    </div>
+                    <div class="mode-grid">
+                        <button id="mode-select" data-mode="select">Select / Drag</button>
+                        <button id="mode-node" data-mode="node">New Node</button>
+                        <button id="mode-link" data-mode="link">New Link</button>
+                        <button id="mode-delete" data-mode="delete">Delete</button>
+                        <button id="mode-box" data-mode="box">New Box</button>
+                    </div>
+                </div>
+
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>History</h4>
+                        <small>Jump backward or forward through changes.</small>
+                    </div>
+                    <div class="button-row two">
+                        <button id="undo-btn">Undo</button>
+                        <button id="redo-btn">Redo</button>
+                    </div>
+                </div>
+
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>Search / Filter</h4>
+                        <small>Hide nodes that do not match your query.</small>
+                    </div>
+                    <input id="search-input" type="text" placeholder="Search nodes...">
+                    <small>Matching nodes stay visible; others are hidden.</small>
                 </div>
             </div>
         </div>
 
-        <div class="section">
-            <h3>Modes</h3>
-            <button id="mode-select" data-mode="select">Select / Drag</button>
-            <button id="mode-node" data-mode="node">New Node</button>
-            <button id="mode-link" data-mode="link">New Link</button>
-            <button id="mode-delete" data-mode="delete">Delete</button>
-            <button id="mode-box" data-mode="box">New Box</button>
-        </div>
+        <div class="panel open" id="panel-selection">
+            <button class="panel-toggle" type="button">
+                <div class="panel-titles">
+                    <div class="eyebrow">Focus</div>
+                    <div class="title">Selection & Properties</div>
+                </div>
+                <span class="chevron" aria-hidden="true"></span>
+            </button>
+            <div class="panel-content">
+                <div class="property-card">
+                    <div class="property-card-heading">
+                        <div>
+                            <div class="eyebrow">Selection</div>
+                            <div class="title-sm">Node</div>
+                        </div>
+                        <div class="selection-chip" id="node-selection-chip">No node selected</div>
+                    </div>
+                    <div id="node-empty-state" class="empty-state">Select a node to edit its properties.</div>
+                    <div id="node-editor" class="property-form">
+                        <label>Label</label>
+                        <input id="edit-label" type="text">
 
-        <div class="section">
-            <h3>Undo / Redo</h3>
-            <button id="undo-btn">Undo</button>
-            <button id="redo-btn">Redo</button>
-        </div>
+                        <label>Color</label>
+                        <input id="edit-color" type="color">
 
-        <div class="section">
-            <h3>Search / Filter</h3>
-            <input id="search-input" type="text" placeholder="Search nodes...">
-            <small>Matching nodes stay visible; others are hidden.</small>
-        </div>
+                        <label>Size</label>
+                        <input id="edit-size" type="number" min="5" max="200">
 
-        <div class="section">
-            <h3>Node Properties</h3>
-            <div id="node-editor">
-                <label>Label</label>
-                <input id="edit-label" type="text">
+                        <label>Group</label>
+                        <input id="edit-group" type="text" placeholder="Group name">
 
-                <label>Color</label>
-                <input id="edit-color" type="color">
+                        <label>Description</label>
+                        <textarea id="edit-desc"></textarea>
 
-                <label>Size</label>
-                <input id="edit-size" type="number" min="5" max="200">
+                        <button id="apply-node-edit">Apply Node Changes</button>
+                    </div>
+                </div>
 
-                <label>Group</label>
-                <input id="edit-group" type="text" placeholder="Group name">
+                <div class="property-card">
+                    <div class="property-card-heading">
+                        <div>
+                            <div class="eyebrow">Selection</div>
+                            <div class="title-sm">Edge</div>
+                        </div>
+                        <div class="selection-chip" id="edge-selection-chip">No edge selected</div>
+                    </div>
+                    <div id="edge-empty-state" class="empty-state">Select an edge to edit its properties.</div>
+                    <div id="edge-editor" class="property-form">
+                        <label>Label</label>
+                        <input id="edge-label" type="text">
 
-                <label>Description</label>
-                <textarea id="edit-desc"></textarea>
+                        <label>Color</label>
+                        <input id="edge-color" type="color" value="#888888">
 
-                <button id="apply-node-edit">Apply Node Changes</button>
+                        <label>Width</label>
+                        <input id="edge-width" type="number" min="1" max="10" value="2">
+
+                        <label class="checkbox-inline">
+                            <input id="edge-directed" type="checkbox">
+                            Directed
+                        </label>
+
+                        <button id="apply-edge-edit">Apply Edge Changes</button>
+                    </div>
+                </div>
+
+                <div class="property-card">
+                    <div class="property-card-heading">
+                        <div>
+                            <div class="eyebrow">Selection</div>
+                            <div class="title-sm">Box</div>
+                        </div>
+                        <div class="selection-chip" id="box-selection-chip">No box selected</div>
+                    </div>
+                    <div id="box-empty-state" class="empty-state">Select a box to edit its label.</div>
+                    <div id="box-editor" class="property-form">
+                        <label>Label</label>
+                        <input id="edit-box-label" type="text">
+                        <button id="apply-box-edit">Apply Changes</button>
+                    </div>
+                </div>
             </div>
         </div>
 
-        <div class="section">
-            <h3>Edge Properties</h3>
-            <div id="edge-editor">
-                <label>Label</label>
-                <input id="edge-label" type="text">
+        <div class="panel open" id="panel-layout">
+            <button class="panel-toggle" type="button">
+                <div class="panel-titles">
+                    <div class="eyebrow">Arrange</div>
+                    <div class="title">Layout & Routing</div>
+                </div>
+                <span class="chevron" aria-hidden="true"></span>
+            </button>
+            <div class="panel-content">
+                <div class="layout-row">
+                    <div class="layout-select">
+                        <label>Layout</label>
+                        <select id="layout-select">
+                            <option value="manual">Manual</option>
+                            <option value="force">Force Layout</option>
+                            <option value="grid">Grid Layout</option>
+                            <option value="circle">Circular Layout</option>
+                            <option value="hierarchical">Hierarchical Layout</option>
+                            <option value="weightedTree">Weighted Tree</option>
+                        </select>
+                    </div>
+                    <button id="apply-layout">Apply Layout</button>
+                </div>
+                <small id="layout-active-label" class="muted">Layout controls change based on the selection above.</small>
 
-                <label>Color</label>
-                <input id="edge-color" type="color" value="#888888">
+                <div class="layout-settings" data-layout="force">
+                    <div class="layout-settings-header">Force options</div>
+                    <label>Repulsion</label>
+                    <input id="force-repulsion" type="number" min="0" step="1000">
 
-                <label>Width</label>
-                <input id="edge-width" type="number" min="1" max="10" value="2">
+                    <label>Ideal edge length</label>
+                    <input id="force-ideal" type="number" min="10" step="10">
 
-                <label>
-                    <input id="edge-directed" type="checkbox">
-                    Directed
-                </label>
+                    <label>Iterations</label>
+                    <input id="force-iterations" type="number" min="10" step="10">
+                </div>
 
-                <button id="apply-edge-edit">Apply Edge Changes</button>
-            </div>
-        </div>
+                <div class="layout-settings" data-layout="grid">
+                    <div class="layout-settings-header">Grid spacing</div>
+                    <label>Box horizontal spacing</label>
+                    <input id="grid-box-hmargin" type="number" min="50" step="10">
 
-        <div class="section">
-            <h3>Box Properties</h3>
-            <div id="box-editor">
-                <label>Label</label>
-                <input id="edit-box-label" type="text">
-                <button id="apply-box-edit">Apply Changes</button>
-            </div>
-        </div>
+                    <label>Box vertical spacing</label>
+                    <input id="grid-box-vmargin" type="number" min="50" step="10">
 
-        <div class="section">
-            <h3>Layout</h3>
-            <select id="layout-select">
-                <option value="manual">Manual</option>
-                <option value="force">Force Layout</option>
-                <option value="grid">Grid Layout</option>
-                <option value="circle">Circular Layout</option>
-                <option value="hierarchical">Hierarchical Layout</option>
-                <option value="weightedTree">Weighted Tree</option>
-            </select>
-            <button id="apply-layout">Apply Layout</button>
+                    <label>Node horizontal spacing</label>
+                    <input id="grid-node-hmargin" type="number" min="20" step="10">
 
-            <div class="layout-settings">
-                <h4>Force options</h4>
-                <label>Repulsion</label>
-                <input id="force-repulsion" type="number" min="0" step="1000">
+                    <label>Node vertical spacing</label>
+                    <input id="grid-node-vmargin" type="number" min="20" step="10">
+                </div>
 
-                <label>Ideal edge length</label>
-                <input id="force-ideal" type="number" min="10" step="10">
+                <div class="layout-settings" data-layout="circle">
+                    <div class="layout-settings-header">Circle layout</div>
+                    <label>Outer radius</label>
+                    <input id="circle-outer-radius" type="number" min="50" step="10">
 
-                <label>Iterations</label>
-                <input id="force-iterations" type="number" min="10" step="10">
-            </div>
+                    <label>Inner radius</label>
+                    <input id="circle-inner-radius" type="number" min="30" step="10">
+                </div>
 
-            <div class="layout-settings">
-                <h4>Grid spacing</h4>
-                <label>Box horizontal spacing</label>
-                <input id="grid-box-hmargin" type="number" min="50" step="10">
+                <div class="layout-settings" data-layout="hierarchical">
+                    <div class="layout-settings-header">Hierarchical layout</div>
+                    <label>Node horizontal spacing</label>
+                    <input id="hier-node-hmargin" type="number" min="20" step="10">
 
-                <label>Box vertical spacing</label>
-                <input id="grid-box-vmargin" type="number" min="50" step="10">
+                    <label>Node vertical spacing</label>
+                    <input id="hier-node-vmargin" type="number" min="20" step="10">
+                </div>
 
-                <label>Node horizontal spacing</label>
-                <input id="grid-node-hmargin" type="number" min="20" step="10">
+                <div class="layout-settings" data-layout="weightedTree">
+                    <div class="layout-settings-header">Weighted tree layout</div>
+                    <label>Tier count</label>
+                    <input id="weighted-tiers" type="number" min="1" step="1">
 
-                <label>Node vertical spacing</label>
-                <input id="grid-node-vmargin" type="number" min="20" step="10">
-            </div>
+                    <label>Tier spacing</label>
+                    <input id="weighted-tier-spacing" type="number" min="20" step="10">
 
-            <div class="layout-settings">
-                <h4>Circle layout</h4>
-                <label>Outer radius</label>
-                <input id="circle-outer-radius" type="number" min="50" step="10">
+                    <label>Node spacing</label>
+                    <input id="weighted-node-spacing" type="number" min="20" step="10">
+                </div>
 
-                <label>Inner radius</label>
-                <input id="circle-inner-radius" type="number" min="30" step="10">
-            </div>
-
-            <div class="layout-settings">
-                <h4>Hierarchical layout</h4>
-                <label>Node horizontal spacing</label>
-                <input id="hier-node-hmargin" type="number" min="20" step="10">
-
-                <label>Node vertical spacing</label>
-                <input id="hier-node-vmargin" type="number" min="20" step="10">
-            </div>
-
-            <div class="layout-settings">
-                <h4>Weighted tree layout</h4>
-                <label>Tier count</label>
-                <input id="weighted-tiers" type="number" min="1" step="1">
-
-                <label>Tier spacing</label>
-                <input id="weighted-tier-spacing" type="number" min="20" step="10">
-
-                <label>Node spacing</label>
-                <input id="weighted-node-spacing" type="number" min="20" step="10">
-            </div>
-
-            <div class="layout-settings">
-                <h4>Edges</h4>
-                <label>Routing style</label>
-                <select id="edge-routing">
-                    <option value="straight">Straight lines</option>
-                    <option value="orthogonal">Orthogonal elbows</option>
-                </select>
-                <small>Use orthogonal routing to reduce crossings and clutter.</small>
-            </div>
-        </div>
-
-        <div class="section">
-            <h3>Analytics <span id="analytics-backend-badge" class="badge badge-gray">In-browser</span></h3>
-            <button id="compute-stats">Compute stats</button>
-            <div id="analytics-stats"></div>
-
-            <h4>Find path A → B</h4>
-            <label>Start node ID</label>
-            <input id="path-start" type="text" placeholder="e.g., n0">
-
-            <label>Target node ID</label>
-            <input id="path-end" type="text" placeholder="e.g., n3">
-
-            <label>Algorithm</label>
-            <select id="path-algorithm">
-                <option value="auto">Auto (prefer weighted)</option>
-                <option value="dijkstra">Dijkstra (weighted)</option>
-                <option value="bfs">BFS (unweighted)</option>
-            </select>
-
-            <div style="display: flex; gap: 6px; margin-top: 6px;">
-                <button id="find-path-btn" style="flex: 1;">Find path</button>
-                <button id="clear-path-btn" style="flex: 1;">Clear path</button>
-            </div>
-
-            <div id="analytics-path-result" style="margin-top: 8px;"></div>
-        </div>
-
-        <div class="section">
-            <h3>Import / Export</h3>
-
-            <label for="import-format">Import format</label>
-            <select id="import-format">
-                <option value="json">Graph JSON (.json)</option>
-                <option value="csv">CSV edge list (.csv)</option>
-                <option value="graphml">GraphML (.graphml/.xml)</option>
-            </select>
-
-            <label class="input-label" for="load-file">Choose file</label>
-            <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,text/csv">
-
-            <div class="io-row">
-                <div class="io-col">
-                    <label for="export-format">Export as</label>
-                    <select id="export-format">
-                        <option value="json">Graph JSON</option>
-                        <option value="svg">SVG</option>
-                        <option value="png">PNG</option>
+                <div class="layout-settings" data-layout="edges">
+                    <div class="layout-settings-header">Edges</div>
+                    <label>Routing style</label>
+                    <select id="edge-routing">
+                        <option value="straight">Straight lines</option>
+                        <option value="orthogonal">Orthogonal elbows</option>
                     </select>
-                </div>
-                <div class="io-col">
-                    <button id="export-graph">Download export</button>
+                    <small>Use orthogonal routing to reduce crossings and clutter.</small>
                 </div>
             </div>
-
-            <button id="load-autosave">Load Autosave</button>
-            <small id="autosave-info"></small>
         </div>
 
-        <div class="section">
-            <h3>Mini-map</h3>
-            <svg id="minimap" width="180" height="120"></svg>
+        <div class="panel open" id="panel-analysis">
+            <button class="panel-toggle" type="button">
+                <div class="panel-titles">
+                    <div class="eyebrow">Insights</div>
+                    <div class="title">Analytics & I/O</div>
+                </div>
+                <span class="chevron" aria-hidden="true"></span>
+            </button>
+            <div class="panel-content">
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>Analytics <span id="analytics-backend-badge" class="badge badge-gray">In-browser</span></h4>
+                        <small>Summaries and path finding.</small>
+                    </div>
+                    <button id="compute-stats">Compute stats</button>
+                    <div id="analytics-stats"></div>
+
+                    <h4>Find path A → B</h4>
+                    <label>Start node ID</label>
+                    <input id="path-start" type="text" placeholder="e.g., n0">
+
+                    <label>Target node ID</label>
+                    <input id="path-end" type="text" placeholder="e.g., n3">
+
+                    <label>Algorithm</label>
+                    <select id="path-algorithm">
+                        <option value="auto">Auto (prefer weighted)</option>
+                        <option value="dijkstra">Dijkstra (weighted)</option>
+                        <option value="bfs">BFS (unweighted)</option>
+                    </select>
+
+                    <div class="button-row two" style="margin-top: 6px;">
+                        <button id="find-path-btn">Find path</button>
+                        <button id="clear-path-btn">Clear path</button>
+                    </div>
+
+                    <div id="analytics-path-result" style="margin-top: 8px;"></div>
+                </div>
+
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>Import / Export</h4>
+                        <small>Bring in data or save a snapshot.</small>
+                    </div>
+
+                    <label for="import-format">Import format</label>
+                    <select id="import-format">
+                        <option value="json">Graph JSON (.json)</option>
+                        <option value="csv">CSV edge list (.csv)</option>
+                        <option value="graphml">GraphML (.graphml/.xml)</option>
+                    </select>
+
+                    <label class="input-label" for="load-file">Choose file</label>
+                    <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,text/csv">
+
+                    <div class="io-row">
+                        <div class="io-col">
+                            <label for="export-format">Export as</label>
+                            <select id="export-format">
+                                <option value="json">Graph JSON</option>
+                                <option value="svg">SVG</option>
+                                <option value="png">PNG</option>
+                            </select>
+                        </div>
+                        <div class="io-col">
+                            <button id="export-graph">Download export</button>
+                        </div>
+                    </div>
+
+                    <button id="load-autosave">Load Autosave</button>
+                    <small id="autosave-info"></small>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel open" id="panel-minimap">
+            <button class="panel-toggle" type="button">
+                <div class="panel-titles">
+                    <div class="eyebrow">Overview</div>
+                    <div class="title">Mini-map</div>
+                </div>
+                <span class="chevron" aria-hidden="true"></span>
+            </button>
+            <div class="panel-content">
+                <svg id="minimap" width="180" height="120"></svg>
+            </div>
         </div>
     </div>
 

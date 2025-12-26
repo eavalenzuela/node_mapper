@@ -1,8 +1,50 @@
+:root {
+    --sidebar-bg: #fafafa;
+    --sidebar-border: #ccc;
+    --sidebar-text: #0f172a;
+    --section-border: #e0e0e0;
+    --button-bg: #f3f3f3;
+    --button-border: #aaa;
+    --button-text: #0f172a;
+    --button-active-bg: #0077dd;
+    --button-active-text: #ffffff;
+    --button-active-border: #0060b0;
+    --input-bg: #ffffff;
+    --input-border: #cbd5e1;
+    --input-text: #0f172a;
+    --small-text: #666;
+    --canvas-bg: #f0f0f0;
+    --minimap-bg: #ffffff;
+    --minimap-border: #ccc;
+}
+
+body.dark {
+    --sidebar-bg: #0f172a;
+    --sidebar-border: #1e293b;
+    --sidebar-text: #e2e8f0;
+    --section-border: #1f2937;
+    --button-bg: #111827;
+    --button-border: #334155;
+    --button-text: #e2e8f0;
+    --button-active-bg: #2563eb;
+    --button-active-text: #ffffff;
+    --button-active-border: #1d4ed8;
+    --input-bg: #111827;
+    --input-border: #334155;
+    --input-text: #e2e8f0;
+    --small-text: #cbd5e1;
+    --canvas-bg: #0b1220;
+    --minimap-bg: #0f172a;
+    --minimap-border: #1f2937;
+}
+
 html, body {
     margin: 0;
     padding: 0;
     overflow: hidden;
     font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: var(--sidebar-text);
+    background: var(--sidebar-bg);
 }
 
 #layout {
@@ -15,12 +57,13 @@ html, body {
 
 #sidebar {
     width: 260px;
-    background: #fafafa;
-    border-right: 1px solid #ccc;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
     padding: 12px;
     box-sizing: border-box;
     font-size: 14px;
     overflow-y: auto;
+    color: var(--sidebar-text);
 }
 
 #sidebar h2 {
@@ -30,7 +73,7 @@ html, body {
 .section {
     margin-bottom: 16px;
     padding-bottom: 10px;
-    border-bottom: 1px solid #e0e0e0;
+    border-bottom: 1px solid var(--section-border);
 }
 
 #sidebar button {
@@ -38,27 +81,34 @@ html, body {
     padding: 7px 8px;
     margin-bottom: 6px;
     cursor: pointer;
-    border: 1px solid #aaa;
-    background: #f3f3f3;
+    border: 1px solid var(--button-border);
+    background: var(--button-bg);
+    color: var(--button-text);
     border-radius: 4px;
     font-size: 13px;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 #sidebar button.active {
-    background: #0077dd;
-    color: white;
-    border-color: #0060b0;
+    background: var(--button-active-bg);
+    color: var(--button-active-text);
+    border-color: var(--button-active-border);
 }
 
-#sidebar input[type="text"],
-#sidebar input[type="number"],
-#sidebar input[type="color"],
+#sidebar input[type=\"text\"],
+#sidebar input[type=\"number\"],
+#sidebar input[type=\"color\"],
 #sidebar textarea,
 #sidebar select {
     width: 100%;
     margin-bottom: 6px;
     box-sizing: border-box;
     font-size: 13px;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    color: var(--input-text);
+    padding: 4px 6px;
+    border-radius: 4px;
 }
 
 #sidebar textarea {
@@ -74,24 +124,76 @@ html, body {
     margin-bottom: 2px;
 }
 
+/* Theme pill */
+.theme-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.theme-pill {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    background: var(--button-bg);
+    border: 1px solid var(--button-border);
+    border-radius: 999px;
+    padding: 4px;
+    gap: 6px;
+    cursor: pointer;
+    width: 120px;
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.theme-pill .pill-option {
+    flex: 1;
+    text-align: center;
+    font-size: 12px;
+    color: var(--button-text);
+    user-select: none;
+}
+
+.theme-pill .pill-handle {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: calc(50% - 6px);
+    height: calc(100% - 6px);
+    background: var(--button-active-bg);
+    border-radius: 999px;
+    transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.theme-pill.active .pill-handle {
+    transform: translateX(100%);
+}
+
+.theme-pill.active .pill-option:last-child {
+    color: var(--button-active-text);
+}
+
+.theme-pill:not(.active) .pill-option:first-child {
+    color: var(--button-active-text);
+}
+
 /* Canvas */
 
 #graphCanvas {
     flex: 1;
-    background: #f0f0f0;
+    background: var(--canvas-bg);
     display: block;
 }
 
 /* Mini-map */
 
 #minimap {
-    border: 1px solid #ccc;
-    background: #fff;
+    border: 1px solid var(--minimap-border);
+    background: var(--minimap-bg);
 }
 
 /* Small text */
 
 small {
     font-size: 11px;
-    color: #666;
+    color: var(--small-text);
 }

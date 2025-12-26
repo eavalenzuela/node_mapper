@@ -222,3 +222,28 @@ small {
 .node-label {
     fill: var(--node-label);
 }
+
+.badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 999px;
+    font-size: 11px;
+    border: 1px solid transparent;
+}
+
+.badge-green {
+    background: #ecfdf3;
+    border-color: #a7f3d0;
+    color: #065f46;
+}
+
+.badge-gray {
+    background: #f4f4f5;
+    border-color: #e4e4e7;
+    color: #27272a;
+}
+
+.error-text {
+    color: #b91c1c;
+    font-size: 12px;
+}

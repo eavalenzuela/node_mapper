@@ -698,27 +698,244 @@ function moveBoxAndChildren(boxId, newX, newY) {
     });
 }
 
-// save / load JSON
-document.getElementById("save-json").addEventListener("click", () => {
-    const graph = { nodes, edges, boxes, layoutSettings };
-    const blob = new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" });
+// ---------- IMPORT / EXPORT ----------
+
+function assignCircularPositions(nodeIds) {
+    const count = nodeIds.length || 1;
+    const radius = Math.max(240, count * 12);
+    const centerX = 400;
+    const centerY = 400;
+    const positioned = {};
+    nodeIds.forEach((id, idx) => {
+        const angle = (idx / count) * Math.PI * 2;
+        positioned[id] = {
+            x: centerX + radius * Math.cos(angle),
+            y: centerY + radius * Math.sin(angle)
+        };
+    });
+    return positioned;
+}
+
+function parseCSVEdgeList(text) {
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return null;
+
+    const splitLine = line => line.split(",").map(s => s.trim());
+    const headerCells = splitLine(lines[0]).map(h => h.toLowerCase());
+    const hasHeader = headerCells.includes("source") && headerCells.includes("target");
+
+    const rows = hasHeader ? lines.slice(1) : lines;
+    const cellsToEdge = (cells, idx) => {
+        const data = hasHeader ? headerCells.reduce((acc, key, i) => ({ ...acc, [key]: cells[i] }), {}) : {};
+        if (!hasHeader) {
+            data.source = cells[0];
+            data.target = cells[1];
+            if (cells[2]) data.label = cells[2];
+        }
+        if (!data.source || !data.target) return null;
+        const directedVal = (data.directed || data.is_directed || data.oriented || "").toString().toLowerCase();
+        const directed = directedVal === "true" || directedVal === "1" || directedVal === "yes";
+        return {
+            id: data.id || `e${idx}`,
+            source: data.source,
+            target: data.target,
+            label: data.label || "",
+            color: data.color || "#888888",
+            width: parseFloat(data.width) || 2,
+            directed
+        };
+    };
+
+    const edgesFromCSV = rows
+        .map((line, idx) => cellsToEdge(splitLine(line), idx))
+        .filter(Boolean);
+    const nodeIds = new Set();
+    edgesFromCSV.forEach(e => {
+        nodeIds.add(e.source);
+        nodeIds.add(e.target);
+    });
+    const positions = assignCircularPositions([...nodeIds]);
+    const parsedNodes = {};
+    [...nodeIds].forEach(id => {
+        parsedNodes[id] = {
+            id,
+            x: positions[id].x,
+            y: positions[id].y,
+            label: id
+        };
+    });
+    return { nodes: parsedNodes, edges: edgesFromCSV, boxes: {} };
+}
+
+function parseGraphML(text) {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(text, "application/xml");
+    if (doc.querySelector("parsererror")) return null;
+
+    const graphEl = doc.querySelector("graph");
+    const defaultDirected = graphEl?.getAttribute("edgedefault") === "directed";
+    const nodesInFile = [...doc.querySelectorAll("node")];
+    const edgesInFile = [...doc.querySelectorAll("edge")];
+
+    const nodesMap = {};
+    const positions = assignCircularPositions(nodesInFile.map(n => n.getAttribute("id") || ""));
+    nodesInFile.forEach((n, idx) => {
+        const id = n.getAttribute("id") || `n${idx}`;
+        let label = id;
+        const dataLabel = n.querySelector("data[key='label']") || n.querySelector("y\\:NodeLabel");
+        if (dataLabel && dataLabel.textContent.trim()) {
+            label = dataLabel.textContent.trim();
+        }
+        const dataX = parseFloat(n.querySelector("data[key='x']")?.textContent || "");
+        const dataY = parseFloat(n.querySelector("data[key='y']")?.textContent || "");
+        nodesMap[id] = {
+            id,
+            label,
+            x: Number.isFinite(dataX) ? dataX : positions[id]?.x || 300 + idx * 30,
+            y: Number.isFinite(dataY) ? dataY : positions[id]?.y || 300
+        };
+    });
+
+    const edgesFromXml = edgesInFile.map((e, idx) => {
+        const source = e.getAttribute("source");
+        const target = e.getAttribute("target");
+        if (!source || !target) return null;
+        const dataLabel = e.querySelector("data[key='label']") || e.querySelector("y\\:EdgeLabel");
+        const directedAttr = e.getAttribute("directed");
+        const directed = directedAttr ? directedAttr === "true" : defaultDirected;
+        return {
+            id: e.getAttribute("id") || `e${idx}`,
+            source,
+            target,
+            label: dataLabel?.textContent?.trim() || "",
+            color: "#888888",
+            width: 2,
+            directed
+        };
+    }).filter(Boolean);
+
+    return { nodes: nodesMap, edges: edgesFromXml, boxes: {} };
+}
+
+function downloadBlob(blob, filename) {
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = "graph.json";
+    a.download = filename;
     a.click();
-});
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 
-document.getElementById("load-json").addEventListener("change", e => {
+function buildExportableSvg() {
+    const clone = svg.cloneNode(true);
+    const width = svg.clientWidth || parseFloat(svg.getAttribute("width")) || 1024;
+    const height = svg.clientHeight || parseFloat(svg.getAttribute("height")) || 768;
+    clone.setAttribute("width", width);
+    clone.setAttribute("height", height);
+    if (!clone.getAttribute("viewBox")) {
+        clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    }
+
+    const computed = getComputedStyle(document.body);
+    const canvasBg = computed.getPropertyValue("--canvas-bg")?.trim() || "#ffffff";
+    const nodeLabelColor = computed.getPropertyValue("--node-label")?.trim() || "#0f172a";
+    const bgRect = clone.querySelector("#svg-bg");
+    if (bgRect) {
+        bgRect.setAttribute("fill", canvasBg);
+    }
+    clone.querySelectorAll(".node-label").forEach(label => {
+        label.setAttribute("fill", nodeLabelColor);
+    });
+    return { svg: clone, width, height, background: canvasBg };
+}
+
+function serializeSvgElement(element) {
+    const serializer = new XMLSerializer();
+    return serializer.serializeToString(element);
+}
+
+function svgStringToPngBlob(svgString, width, height, background) {
+    return new Promise((resolve, reject) => {
+        const image = new Image();
+        const blob = new Blob([svgString], { type: "image/svg+xml" });
+        const url = URL.createObjectURL(blob);
+        image.onload = () => {
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            if (ctx) {
+                ctx.fillStyle = background || "#ffffff";
+                ctx.fillRect(0, 0, width, height);
+                ctx.drawImage(image, 0, 0);
+                canvas.toBlob(resultBlob => {
+                    URL.revokeObjectURL(url);
+                    if (resultBlob) resolve(resultBlob);
+                    else reject(new Error("Unable to create PNG blob"));
+                });
+            } else {
+                URL.revokeObjectURL(url);
+                reject(new Error("No 2D context available"));
+            }
+        };
+        image.onerror = err => {
+            URL.revokeObjectURL(url);
+            reject(err);
+        };
+        image.src = url;
+    });
+}
+
+document.getElementById("load-file").addEventListener("change", e => {
     const file = e.target.files[0];
     if (!file) return;
+    const importFormat = document.getElementById("import-format").value;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
         pushUndo();
-        const graph = JSON.parse(reader.result);
-        applyGraphPayload(graph);
-        render();
+        try {
+            let graph = null;
+            if (importFormat === "json") {
+                graph = JSON.parse(reader.result);
+            } else if (importFormat === "csv") {
+                graph = parseCSVEdgeList(reader.result);
+            } else if (importFormat === "graphml") {
+                graph = parseGraphML(reader.result);
+            }
+            if (!graph) throw new Error("Unable to parse file.");
+            applyGraphPayload(graph);
+            render();
+        } catch (err) {
+            console.error("Import error", err);
+            alert("Could not import file. Please verify the format.");
+        } finally {
+            e.target.value = "";
+        }
     };
     reader.readAsText(file);
+});
+
+document.getElementById("export-graph").addEventListener("click", async () => {
+    const format = document.getElementById("export-format").value;
+    const graph = { nodes, edges, boxes, layoutSettings };
+    if (format === "json") {
+        const blob = new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" });
+        downloadBlob(blob, "graph.json");
+        return;
+    }
+
+    const { svg: svgCopy, width, height, background } = buildExportableSvg();
+    const svgString = serializeSvgElement(svgCopy);
+    if (format === "svg") {
+        downloadBlob(new Blob([svgString], { type: "image/svg+xml" }), "graph.svg");
+    } else if (format === "png") {
+        try {
+            const pngBlob = await svgStringToPngBlob(svgString, width, height, background);
+            downloadBlob(pngBlob, "graph.png");
+        } catch (err) {
+            console.error("PNG export failed", err);
+            alert("PNG export failed. Try SVG export instead.");
+        }
+    }
 });
 
 // autosave load

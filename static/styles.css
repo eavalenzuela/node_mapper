@@ -118,6 +118,28 @@ html, body {
     min-height: 50px;
 }
 
+.input-label {
+    font-weight: 600;
+    font-size: 12px;
+}
+
+#sidebar label {
+    font-size: 12px;
+    display: block;
+    margin: 6px 0 2px 0;
+}
+
+.io-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    margin: 8px 0;
+}
+
+.io-col {
+    flex: 1;
+}
+
 #node-editor label,
 #edge-editor label {
     display: block;

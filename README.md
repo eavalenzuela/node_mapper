@@ -12,6 +12,7 @@ A lightweight Flask app that serves an in-browser graph editor. The editor lets 
 - **Undo/redo:** In-browser undo stack for most actions.
 - **Autosave and file I/O:** LocalStorage autosave plus export/import of graph JSON files, including layout settings and routing preferences.
 - **Mini-map:** Overview map that reflects the current viewport and can re-center the main canvas.
+- **Analytics:** Sidebar tools to compute graph metrics and find shortest paths (BFS or Dijkstra), with optional server-side computation for very large graphs.
 
 ## Layout modes and parameters
 - **Manual:** Drag items directly. Use the **Edges → Routing style** control to toggle straight vs. orthogonal segments.
@@ -53,6 +54,11 @@ The server uses an in-memory graph (`GRAPH` in `node_mapper.py`). Data is not pe
 - `POST /nodes` — Create a node; accepts `x`, `y`, and `label` (defaults provided).
 - `POST /edges` — Create an edge between `source` and `target` node IDs.
 - `GET /` and `GET /static/*` — Serve the front-end assets.
+
+## Analytics
+- Use the **Analytics** panel in the sidebar to compute node/edge counts, component counts, average/max degree, and isolated node totals.
+- Enter two node IDs to run **Find path A→B** using BFS (unweighted) or Dijkstra (weighted) shortest paths; paths highlight on the canvas.
+- For large graphs (default: 500+ nodes), analytics requests automatically fall back to the Flask `/analytics` endpoint to avoid blocking the browser.
 
 ## Usage tips
 - Use the **Modes** section to switch between selecting, creating nodes, linking nodes, deleting, or drawing boxes.

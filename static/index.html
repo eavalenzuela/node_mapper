@@ -176,6 +176,33 @@
         </div>
 
         <div class="section">
+            <h3>Analytics <span id="analytics-backend-badge" class="badge badge-gray">In-browser</span></h3>
+            <button id="compute-stats">Compute stats</button>
+            <div id="analytics-stats"></div>
+
+            <h4>Find path A → B</h4>
+            <label>Start node ID</label>
+            <input id="path-start" type="text" placeholder="e.g., n0">
+
+            <label>Target node ID</label>
+            <input id="path-end" type="text" placeholder="e.g., n3">
+
+            <label>Algorithm</label>
+            <select id="path-algorithm">
+                <option value="auto">Auto (prefer weighted)</option>
+                <option value="dijkstra">Dijkstra (weighted)</option>
+                <option value="bfs">BFS (unweighted)</option>
+            </select>
+
+            <div style="display: flex; gap: 6px; margin-top: 6px;">
+                <button id="find-path-btn" style="flex: 1;">Find path</button>
+                <button id="clear-path-btn" style="flex: 1;">Clear path</button>
+            </div>
+
+            <div id="analytics-path-result" style="margin-top: 8px;"></div>
+        </div>
+
+        <div class="section">
             <h3>Save / Load</h3>
             <button id="save-json">Save Graph JSON</button>
             <input type="file" id="load-json">

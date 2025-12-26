@@ -113,6 +113,19 @@ function defaultLayoutSettings() {
 }
 
 let layoutSettings = defaultLayoutSettings();
+const ANALYTICS_BACKEND_THRESHOLD = 500;
+
+const analyticsState = {
+    stats: null,
+    pathResult: null,
+    pathError: null,
+    usingBackend: false
+};
+
+let pathHighlights = {
+    nodes: new Set(),
+    edges: new Set()
+};
 
 function normalizeLayoutSettings(incoming = {}) {
     const base = defaultLayoutSettings();
@@ -200,6 +213,11 @@ function applyGraphPayload(graph = {}) {
     selectedNodeId = null;
     selectedEdgeId = null;
     selectedBoxId = null;
+    analyticsState.stats = null;
+    analyticsState.pathResult = null;
+    analyticsState.pathError = null;
+    resetPathHighlights();
+    renderAnalyticsPanel();
     syncLayoutControlsFromSettings();
 }
 
@@ -208,6 +226,263 @@ function screenToWorld(clientX, clientY) {
     const x = (clientX - rect.left - view.tx) / view.scale;
     const y = (clientY - rect.top - view.ty) / view.scale;
     return { x, y };
+}
+
+function resetPathHighlights() {
+    pathHighlights = { nodes: new Set(), edges: new Set() };
+}
+
+// ---------- ANALYTICS HELPERS ----------
+
+function buildAdjacency({ directed = true, weighted = false } = {}) {
+    const adj = {};
+    Object.keys(nodes).forEach(id => { adj[id] = []; });
+
+    edges.forEach(edge => {
+        if (!nodes[edge.source] || !nodes[edge.target]) return;
+        const weight = weighted ? Math.max(0.0001, Number(edge.weight || edge.width || 1)) : 1;
+        const entry = { to: edge.target, id: edge.id, weight };
+        adj[edge.source].push(entry);
+        if (!directed || !edge.directed) {
+            adj[edge.target].push({ to: edge.source, id: edge.id, weight });
+        }
+    });
+
+    return adj;
+}
+
+function bfsShortestPath(start, goal) {
+    const adj = buildAdjacency({ directed: true, weighted: false });
+    if (!adj[start] || !adj[goal]) return null;
+    const queue = [start];
+    const visited = new Set([start]);
+    const parent = {};
+
+    while (queue.length) {
+        const node = queue.shift();
+        if (node === goal) break;
+        adj[node].forEach(next => {
+            if (!visited.has(next.to)) {
+                visited.add(next.to);
+                parent[next.to] = { node, edgeId: next.id };
+                queue.push(next.to);
+            }
+        });
+    }
+
+    if (!visited.has(goal)) return null;
+
+    const nodePath = [];
+    const edgePath = [];
+    let cur = goal;
+    while (cur !== undefined) {
+        nodePath.push(cur);
+        const meta = parent[cur];
+        if (!meta) break;
+        edgePath.push(meta.edgeId);
+        cur = meta.node;
+    }
+    nodePath.reverse();
+    edgePath.reverse();
+    return { nodes: nodePath, edges: edgePath, algorithm: "bfs" };
+}
+
+function dijkstraShortestPath(start, goal) {
+    const adj = buildAdjacency({ directed: true, weighted: true });
+    if (!adj[start] || !adj[goal]) return null;
+
+    const dist = {};
+    const prev = {};
+    Object.keys(adj).forEach(id => { dist[id] = Infinity; });
+    dist[start] = 0;
+
+    const queue = Object.keys(adj);
+    while (queue.length) {
+        queue.sort((a, b) => dist[a] - dist[b]);
+        const u = queue.shift();
+        if (u === goal || dist[u] === Infinity) break;
+        adj[u].forEach(({ to, id, weight }) => {
+            const alt = dist[u] + weight;
+            if (alt < dist[to]) {
+                dist[to] = alt;
+                prev[to] = { node: u, edgeId: id };
+            }
+        });
+    }
+
+    if (dist[goal] === Infinity) return null;
+
+    const nodePath = [];
+    const edgePath = [];
+    let cur = goal;
+    while (cur !== undefined) {
+        nodePath.push(cur);
+        const meta = prev[cur];
+        if (!meta) break;
+        edgePath.push(meta.edgeId);
+        cur = meta.node;
+    }
+    nodePath.reverse();
+    edgePath.reverse();
+    return { nodes: nodePath, edges: edgePath, cost: dist[goal], algorithm: "dijkstra" };
+}
+
+function computeConnectedComponents() {
+    const adj = buildAdjacency({ directed: false, weighted: false });
+    const visited = new Set();
+    let components = 0;
+
+    Object.keys(adj).forEach(start => {
+        if (visited.has(start)) return;
+        components += 1;
+        const stack = [start];
+        visited.add(start);
+        while (stack.length) {
+            const node = stack.pop();
+            adj[node].forEach(next => {
+                if (!visited.has(next.to)) {
+                    visited.add(next.to);
+                    stack.push(next.to);
+                }
+            });
+        }
+    });
+
+    return components;
+}
+
+function computeGraphStats() {
+    const nodeCount = Object.keys(nodes).length;
+    const edgeCount = edges.length;
+    const adj = buildAdjacency({ directed: false, weighted: false });
+    let maxDegree = 0;
+    let isolated = 0;
+    Object.keys(adj).forEach(id => {
+        const deg = adj[id].length;
+        if (deg === 0) isolated += 1;
+        maxDegree = Math.max(maxDegree, deg);
+    });
+
+    return {
+        nodeCount,
+        edgeCount,
+        components: computeConnectedComponents(),
+        averageDegree: nodeCount ? (edgeCount * 2 / nodeCount).toFixed(2) : "0.00",
+        maxDegree,
+        isolated
+    };
+}
+
+function deriveHighlights(pathResult) {
+    resetPathHighlights();
+    if (!pathResult) return;
+    (pathResult.nodes || []).forEach(id => pathHighlights.nodes.add(id));
+    (pathResult.edges || []).forEach(id => pathHighlights.edges.add(id));
+}
+
+async function runAnalytics({ startId, endId, algorithm }) {
+    const shouldUseBackend = Object.keys(nodes).length > ANALYTICS_BACKEND_THRESHOLD;
+    const graphPayload = { nodes, edges };
+    analyticsState.pathError = null;
+
+    if (shouldUseBackend) {
+        try {
+            const res = await fetch("/analytics", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ graph: graphPayload, start: startId, end: endId, algorithm })
+            });
+            if (!res.ok) throw new Error("HTTP " + res.status);
+            const data = await res.json();
+            analyticsState.stats = data.stats || null;
+            analyticsState.pathResult = data.path || null;
+            analyticsState.pathError = data.pathError || null;
+            analyticsState.usingBackend = true;
+            deriveHighlights(analyticsState.pathResult);
+            renderAnalyticsPanel();
+            render();
+            return;
+        } catch (e) {
+            console.warn("Falling back to client-side analytics:", e);
+        }
+    }
+
+    analyticsState.usingBackend = false;
+    analyticsState.stats = computeGraphStats();
+
+    if (startId && endId) {
+        if (!nodes[startId] || !nodes[endId]) {
+            analyticsState.pathResult = null;
+            analyticsState.pathError = "Start or end node not found.";
+            resetPathHighlights();
+            renderAnalyticsPanel();
+            render();
+            return;
+        }
+        let path;
+        if (algorithm === "dijkstra") {
+            path = dijkstraShortestPath(startId, endId);
+        } else if (algorithm === "bfs") {
+            path = bfsShortestPath(startId, endId);
+        } else {
+            path = dijkstraShortestPath(startId, endId) || bfsShortestPath(startId, endId);
+        }
+        analyticsState.pathResult = path;
+        analyticsState.pathError = path ? null : "No path between the selected nodes.";
+        deriveHighlights(path);
+    } else {
+        analyticsState.pathResult = null;
+        analyticsState.pathError = null;
+        resetPathHighlights();
+    }
+    renderAnalyticsPanel();
+    render();
+}
+
+function renderAnalyticsPanel() {
+    const statsEl = document.getElementById("analytics-stats");
+    const pathEl = document.getElementById("analytics-path-result");
+    const backendBadge = document.getElementById("analytics-backend-badge");
+    const usingBackend = analyticsState.usingBackend;
+
+    if (backendBadge) {
+        backendBadge.textContent = usingBackend ? "Backend" : "In-browser";
+        backendBadge.className = usingBackend ? "badge badge-green" : "badge badge-gray";
+    }
+
+    if (statsEl) {
+        const s = analyticsState.stats;
+        if (!s) {
+            statsEl.innerHTML = "<em>No stats computed yet.</em>";
+        } else {
+            statsEl.innerHTML = `
+                <div><strong>Nodes:</strong> ${s.nodeCount}</div>
+                <div><strong>Edges:</strong> ${s.edgeCount}</div>
+                <div><strong>Components:</strong> ${s.components}</div>
+                <div><strong>Average degree:</strong> ${s.averageDegree}</div>
+                <div><strong>Max degree:</strong> ${s.maxDegree}</div>
+                <div><strong>Isolated nodes:</strong> ${s.isolated}</div>
+            `;
+        }
+    }
+
+    if (pathEl) {
+        const p = analyticsState.pathResult;
+        if (analyticsState.pathError) {
+            pathEl.innerHTML = `<div class="error-text">${analyticsState.pathError}</div>`;
+        } else if (!p) {
+            pathEl.innerHTML = "<em>No path computed yet.</em>";
+        } else {
+            const nodesStr = (p.nodes || []).join(" → ");
+            const costStr = typeof p.cost === "number" ? ` (cost ${p.cost.toFixed(2)})` : "";
+            pathEl.innerHTML = `
+                <div><strong>Algorithm:</strong> ${p.algorithm || "auto"}</div>
+                <div><strong>Path:</strong> ${nodesStr || "n/a"}</div>
+                ${costStr ? `<div><strong>Distance:</strong> ${p.cost.toFixed(2)}</div>` : ""}
+                <div><strong>Edges:</strong> ${(p.edges || []).join(", ") || "n/a"}</div>
+            `;
+        }
+    }
 }
 
 function updateAutosaveInfo() {
@@ -288,7 +563,12 @@ async function loadGraphFromBackend() {
         nodeCounter = 0;
         edgeCounter = 0;
         boxCounter = 0;
+        analyticsState.stats = null;
+        analyticsState.pathResult = null;
+        analyticsState.pathError = null;
+        resetPathHighlights();
         syncLayoutControlsFromSettings();
+        renderAnalyticsPanel();
         render();
     }
 }
@@ -467,6 +747,38 @@ document.getElementById("apply-box-edit").addEventListener("click", () => {
     b.label = document.getElementById("edit-box-label").value;
     render();
 });
+
+// analytics
+const computeStatsBtn = document.getElementById("compute-stats");
+if (computeStatsBtn) {
+    computeStatsBtn.addEventListener("click", () => {
+        runAnalytics({ algorithm: "auto" });
+    });
+}
+
+const findPathBtn = document.getElementById("find-path-btn");
+if (findPathBtn) {
+    findPathBtn.addEventListener("click", () => {
+        const startInput = document.getElementById("path-start");
+        const endInput = document.getElementById("path-end");
+        const algoSelect = document.getElementById("path-algorithm");
+        const startId = (startInput?.value || "").trim();
+        const endId = (endInput?.value || "").trim();
+        const algorithm = algoSelect?.value || "auto";
+        runAnalytics({ startId: startId || null, endId: endId || null, algorithm });
+    });
+}
+
+const clearPathBtn = document.getElementById("clear-path-btn");
+if (clearPathBtn) {
+    clearPathBtn.addEventListener("click", () => {
+        analyticsState.pathResult = null;
+        analyticsState.pathError = null;
+        resetPathHighlights();
+        renderAnalyticsPanel();
+        render();
+    });
+}
 
 // ---------- PAN & ZOOM ----------
 
@@ -1110,8 +1422,9 @@ function render() {
         if (!visibleNodes[edge.source] || !visibleNodes[edge.target]) return;
 
         const points = getEdgePointsForRouting(src, tgt);
-        const strokeColor = edge.id === selectedEdgeId ? "#ff6600" : (edge.color || "#888");
-        const strokeWidth = edge.width || 2;
+        const onPath = pathHighlights.edges.has(edge.id);
+        const strokeColor = onPath ? "#ff2d55" : (edge.id === selectedEdgeId ? "#ff6600" : (edge.color || "#888"));
+        const strokeWidth = (edge.width || 2) + (onPath ? 1.5 : 0);
         let edgeElement;
 
         if (points.length > 2) {
@@ -1174,14 +1487,15 @@ function render() {
         if (!visibleNodes[n.id]) return;
 
         const r = n.size || 25;
+        const onPath = pathHighlights.nodes.has(n.id);
 
         const circle = document.createElementNS(NS, "circle");
         circle.setAttribute("cx", n.x);
         circle.setAttribute("cy", n.y);
         circle.setAttribute("r", r);
         circle.setAttribute("fill", n.color || "#4682b4");
-        circle.setAttribute("stroke", n.id === selectedNodeId ? "#ff9900" : "#333");
-        circle.setAttribute("stroke-width", n.id === selectedNodeId ? "3" : "1");
+        circle.setAttribute("stroke", onPath ? "#ff2d55" : (n.id === selectedNodeId ? "#ff9900" : "#333"));
+        circle.setAttribute("stroke-width", onPath ? "4" : (n.id === selectedNodeId ? "3" : "1"));
         circle.dataset.nodeId = n.id;
         viewport.appendChild(circle);
 
@@ -1363,4 +1677,5 @@ if (minimap) {
 syncLayoutControlsFromSettings();
 initTheme();
 updateAutosaveInfo();
+renderAnalyticsPanel();
 loadGraphFromBackend();

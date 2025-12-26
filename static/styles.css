@@ -16,6 +16,7 @@
     --canvas-bg: #f0f0f0;
     --minimap-bg: #ffffff;
     --minimap-border: #ccc;
+    --node-label: #0f172a;
 }
 
 body.dark {
@@ -36,6 +37,7 @@ body.dark {
     --canvas-bg: #0b1220;
     --minimap-bg: #0f172a;
     --minimap-border: #1f2937;
+    --node-label: #ffffff;
 }
 
 html, body {
@@ -196,4 +198,8 @@ html, body {
 small {
     font-size: 11px;
     color: var(--small-text);
+}
+
+.node-label {
+    fill: var(--node-label);
 }

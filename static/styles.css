@@ -1,0 +1,97 @@
+html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+#layout {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+}
+
+/* Sidebar */
+
+#sidebar {
+    width: 260px;
+    background: #fafafa;
+    border-right: 1px solid #ccc;
+    padding: 12px;
+    box-sizing: border-box;
+    font-size: 14px;
+    overflow-y: auto;
+}
+
+#sidebar h2 {
+    margin-top: 0;
+}
+
+.section {
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+#sidebar button {
+    width: 100%;
+    padding: 7px 8px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    border: 1px solid #aaa;
+    background: #f3f3f3;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+#sidebar button.active {
+    background: #0077dd;
+    color: white;
+    border-color: #0060b0;
+}
+
+#sidebar input[type="text"],
+#sidebar input[type="number"],
+#sidebar input[type="color"],
+#sidebar textarea,
+#sidebar select {
+    width: 100%;
+    margin-bottom: 6px;
+    box-sizing: border-box;
+    font-size: 13px;
+}
+
+#sidebar textarea {
+    resize: vertical;
+    min-height: 50px;
+}
+
+#node-editor label,
+#edge-editor label {
+    display: block;
+    font-size: 12px;
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+
+/* Canvas */
+
+#graphCanvas {
+    flex: 1;
+    background: #f0f0f0;
+    display: block;
+}
+
+/* Mini-map */
+
+#minimap {
+    border: 1px solid #ccc;
+    background: #fff;
+}
+
+/* Small text */
+
+small {
+    font-size: 11px;
+    color: #666;
+}

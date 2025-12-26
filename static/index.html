@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Graph Editor</title>
+    <link rel="stylesheet" href="static/styles.css">
+</head>
+<body>
+
+<div id="layout">
+    <div id="sidebar">
+        <h2>Graph Editor</h2>
+
+        <div class="section">
+            <h3>Modes</h3>
+            <button id="mode-select" data-mode="select">Select / Drag</button>
+            <button id="mode-node" data-mode="node">New Node</button>
+            <button id="mode-link" data-mode="link">New Link</button>
+            <button id="mode-delete" data-mode="delete">Delete</button>
+            <button id="mode-box" data-mode="box">New Box</button>
+        </div>
+
+        <div class="section">
+            <h3>Undo / Redo</h3>
+            <button id="undo-btn">Undo</button>
+            <button id="redo-btn">Redo</button>
+        </div>
+
+        <div class="section">
+            <h3>Search / Filter</h3>
+            <input id="search-input" type="text" placeholder="Search nodes...">
+            <small>Matching nodes stay visible; others are hidden.</small>
+        </div>
+
+        <div class="section">
+            <h3>Node Properties</h3>
+            <div id="node-editor">
+                <label>Label</label>
+                <input id="edit-label" type="text">
+
+                <label>Color</label>
+                <input id="edit-color" type="color">
+
+                <label>Size</label>
+                <input id="edit-size" type="number" min="5" max="200">
+
+                <label>Group</label>
+                <input id="edit-group" type="text" placeholder="Group name">
+
+                <label>Description</label>
+                <textarea id="edit-desc"></textarea>
+
+                <button id="apply-node-edit">Apply Node Changes</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>Edge Properties</h3>
+            <div id="edge-editor">
+                <label>Label</label>
+                <input id="edge-label" type="text">
+
+                <label>Color</label>
+                <input id="edge-color" type="color" value="#888888">
+
+                <label>Width</label>
+                <input id="edge-width" type="number" min="1" max="10" value="2">
+
+                <label>
+                    <input id="edge-directed" type="checkbox">
+                    Directed
+                </label>
+
+                <button id="apply-edge-edit">Apply Edge Changes</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>Box Properties</h3>
+            <div id="box-editor">
+                <label>Label</label>
+                <input id="edit-box-label" type="text">
+                <button id="apply-box-edit">Apply Changes</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h3>Layout</h3>
+            <select id="layout-select">
+                <option value="manual">Manual</option>
+                <option value="force">Force Layout</option>
+                <option value="grid">Grid Layout</option>
+                <option value="circle">Circular Layout</option>
+                <option value="hierarchical">Hierarchical Layout</option>
+                <option value="weightedTree">Weighted Tree</option>
+            </select>
+            <button id="apply-layout">Apply Layout</button>
+        </div>
+
+        <div class="section">
+            <h3>Save / Load</h3>
+            <button id="save-json">Save Graph JSON</button>
+            <input type="file" id="load-json">
+
+            <button id="load-autosave">Load Autosave</button>
+            <small id="autosave-info"></small>
+        </div>
+
+        <div class="section">
+            <h3>Mini-map</h3>
+            <svg id="minimap" width="180" height="120"></svg>
+        </div>
+    </div>
+
+    <svg id="graphCanvas"></svg>
+</div>
+
+<script src="static/app.js"></script>
+<script src="static/layout.js"></script>
+</body>
+</html>

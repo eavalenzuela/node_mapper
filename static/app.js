@@ -3,6 +3,7 @@
 const svg = document.getElementById("graphCanvas");
 const minimap = document.getElementById("minimap");
 const NS = "http://www.w3.org/2000/svg";
+const THEME_KEY = "graph-theme";
 
 // ---------- STATE ----------
 
@@ -46,6 +47,7 @@ let searchTerm = "";
 
 // autosave
 const AUTOSAVE_KEY = "graph-autosave-v1";
+let currentTheme = "light";
 
 // id counters for new elements
 let nodeCounter = 0;
@@ -101,6 +103,36 @@ function autosave() {
     };
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
     updateAutosaveInfo();
+}
+
+// ---------- THEME ----------
+
+function applyTheme(theme) {
+    currentTheme = theme === "dark" ? "dark" : "light";
+    document.body.classList.toggle("dark", currentTheme === "dark");
+    const toggle = document.getElementById("theme-toggle");
+    if (toggle) {
+        toggle.classList.toggle("active", currentTheme === "dark");
+        toggle.setAttribute("aria-checked", currentTheme === "dark");
+    }
+    localStorage.setItem(THEME_KEY, currentTheme);
+}
+
+function initTheme() {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === "dark" || saved === "light") {
+        applyTheme(saved);
+        return;
+    }
+    const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    applyTheme(prefersDark ? "dark" : "light");
+}
+
+const themeToggle = document.getElementById("theme-toggle");
+if (themeToggle) {
+    themeToggle.addEventListener("click", () => {
+        applyTheme(currentTheme === "dark" ? "light" : "dark");
+    });
 }
 
 // ---------- LOAD INITIAL GRAPH (optional backend) ----------
@@ -1064,5 +1096,6 @@ if (minimap) {
 
 // ---------- INIT ----------
 
+initTheme();
 updateAutosaveInfo();
 loadGraphFromBackend();

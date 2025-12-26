@@ -203,9 +203,31 @@
         </div>
 
         <div class="section">
-            <h3>Save / Load</h3>
-            <button id="save-json">Save Graph JSON</button>
-            <input type="file" id="load-json">
+            <h3>Import / Export</h3>
+
+            <label for="import-format">Import format</label>
+            <select id="import-format">
+                <option value="json">Graph JSON (.json)</option>
+                <option value="csv">CSV edge list (.csv)</option>
+                <option value="graphml">GraphML (.graphml/.xml)</option>
+            </select>
+
+            <label class="input-label" for="load-file">Choose file</label>
+            <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,text/csv">
+
+            <div class="io-row">
+                <div class="io-col">
+                    <label for="export-format">Export as</label>
+                    <select id="export-format">
+                        <option value="json">Graph JSON</option>
+                        <option value="svg">SVG</option>
+                        <option value="png">PNG</option>
+                    </select>
+                </div>
+                <div class="io-col">
+                    <button id="export-graph">Download export</button>
+                </div>
+            </div>
 
             <button id="load-autosave">Load Autosave</button>
             <small id="autosave-info"></small>

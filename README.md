@@ -13,6 +13,7 @@ A lightweight Flask app that serves an in-browser graph editor. The editor lets 
 - **Autosave and file I/O:** LocalStorage autosave plus export/import of graph JSON files, including layout settings and routing preferences.
 - **Mini-map:** Overview map that reflects the current viewport and can re-center the main canvas.
 - **Analytics:** Sidebar tools to compute graph metrics and find shortest paths (BFS or Dijkstra), with optional server-side computation for very large graphs.
+- **Import/Export formats:** Load graphs from JSON, CSV edge lists, or GraphML; export to JSON, SVG, or PNG directly from the UI.
 
 ## Layout modes and parameters
 - **Manual:** Drag items directly. Use the **Edges → Routing style** control to toggle straight vs. orthogonal segments.
@@ -30,6 +31,28 @@ Layout and routing settings persist in `localStorage` and are bundled into JSON 
 - `static/app.js` — Client-side logic for editing, rendering, and autosave.
 - `static/layout.js` — Layout engines for arranging nodes and boxes.
 - `static/styles.css` — Sidebar and canvas styling.
+
+## Import / Export formats
+Use the **Import / Export** section in the sidebar to choose a format, select a file, and download exports:
+
+- **JSON:** Full graph (nodes, edges, boxes, layout settings). Uses the same structure as autosave exports.
+- **CSV edge list:** Rows describing edges. Headers are optional; when present the parser looks for `source`, `target`, `label`, `width`, `color`, and `directed` columns.
+  ```csv
+  source,target,label,directed
+  A,B,Depends on,true
+  B,C,Uses,false
+  ```
+- **GraphML:** Basic GraphML with node/edge IDs. Edge direction uses the `<graph edgedefault>` attribute or per-edge `directed` attributes. Labels are pulled from `<data key="label">` (or `y:NodeLabel` when present).
+  ```xml
+  <graphml xmlns="http://graphml.graphdrawing.org/xmlns">
+    <graph id="G" edgedefault="directed">
+      <node id="A"><data key="label">Service A</data></node>
+      <node id="B"><data key="label">Service B</data></node>
+      <edge id="e1" source="A" target="B"><data key="label">Calls</data></edge>
+    </graph>
+  </graphml>
+  ```
+- **SVG / PNG:** Exports use the current SVG canvas (`#graphCanvas`) so visuals match what you see (including themes, labels, and routing).
 
 ## Running locally
 1. Install Python 3.10+ and create a virtual environment:

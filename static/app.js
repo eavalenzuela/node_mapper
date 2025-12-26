@@ -250,19 +250,6 @@ document.getElementById("apply-edge-edit").addEventListener("click", () => {
     render();
 });
 
-// layout
-document.getElementById("apply-layout").addEventListener("click", () => {
-    const layout = document.getElementById("layout-select").value;
-    pushUndo();
-
-    if (layout === "grid") applyGridLayout();
-    if (layout === "circle") applyCircleLayout();
-    if (layout === "hierarchical") applyHierarchicalLayout();
-    if (layout === "force") applyForceLayout();
-
-    render();
-});
-
 function moveBoxAndChildren(boxId, newX, newY) {
     const b = boxes[boxId];
     if (!b) return;

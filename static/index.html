@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Graph Editor</title>
+    <title>Node Mapper</title>
     <base href="/">
     <link rel="stylesheet" href="static/styles.css">
 </head>
@@ -9,7 +9,19 @@
 
 <div id="layout">
     <div id="sidebar">
-        <h2>Graph Editor</h2>
+        <div class="sidebar-header">
+            <h2>Node Mapper</h2>
+            <div class="theme-pill" id="theme-toggle" role="switch" aria-checked="false" aria-label="Toggle dark mode">
+                <span class="pill-option">Light</span>
+                <span class="pill-option">Dark</span>
+                <span class="pill-handle"></span>
+            </div>
+        </div>
+
+        <div class="button-row two sidebar-actions">
+            <button id="undo-btn">Undo</button>
+            <button id="redo-btn">Redo</button>
+        </div>
 
         <div class="panel open" id="panel-workspace">
             <button class="panel-toggle" type="button">
@@ -22,19 +34,6 @@
             <div class="panel-content">
                 <div class="subsection">
                     <div class="subsection-header">
-                        <h4>Theme</h4>
-                    </div>
-                    <div class="theme-header">
-                        <div class="theme-pill" id="theme-toggle" role="switch" aria-checked="false" aria-label="Toggle dark mode">
-                            <span class="pill-option">Light</span>
-                            <span class="pill-option">Dark</span>
-                            <span class="pill-handle"></span>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="subsection">
-                    <div class="subsection-header">
                         <h4>Modes</h4>
                         <small>Choose how clicks behave on the canvas.</small>
                     </div>
@@ -44,17 +43,6 @@
                         <button id="mode-link" data-mode="link">New Link</button>
                         <button id="mode-delete" data-mode="delete">Delete</button>
                         <button id="mode-box" data-mode="box">New Box</button>
-                    </div>
-                </div>
-
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>History</h4>
-                        <small>Jump backward or forward through changes.</small>
-                    </div>
-                    <div class="button-row two">
-                        <button id="undo-btn">Undo</button>
-                        <button id="redo-btn">Redo</button>
                     </div>
                 </div>
 
@@ -251,7 +239,7 @@
             <button class="panel-toggle" type="button">
                 <div class="panel-titles">
                     <div class="eyebrow">Insights</div>
-                    <div class="title">Analytics & I/O</div>
+                    <div class="title">Analytics</div>
                 </div>
                 <span class="chevron" aria-hidden="true"></span>
             </button>
@@ -286,6 +274,18 @@
                     <div id="analytics-path-result" style="margin-top: 8px;"></div>
                 </div>
 
+            </div>
+        </div>
+
+        <div class="panel open" id="panel-io">
+            <button class="panel-toggle" type="button">
+                <div class="panel-titles">
+                    <div class="eyebrow">Data</div>
+                    <div class="title">I/O</div>
+                </div>
+                <span class="chevron" aria-hidden="true"></span>
+            </button>
+            <div class="panel-content">
                 <div class="subsection">
                     <div class="subsection-header">
                         <h4>Import / Export</h4>

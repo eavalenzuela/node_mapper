@@ -14,22 +14,78 @@
      * }
      */
 
+    const defaultOptions = {
+        grid: {
+            boxHMargin: 400,
+            boxVMargin: 280,
+            boxStartX: 100,
+            boxStartY: 100,
+            separationPadding: 40,
+            separationIterations: 50,
+            nodeHMargin: 150,
+            nodeVMargin: 150
+        },
+        circle: {
+            outerRadius: 600,
+            innerRadius: 350,
+            separationPadding: 40,
+            separationIterations: 50
+        },
+        hierarchical: {
+            boxHMargin: 400,
+            boxVMargin: 260,
+            boxStartX: 150,
+            boxStartY: 80,
+            separationPadding: 40,
+            separationIterations: 50,
+            nodeHMargin: 180,
+            nodeVMargin: 120,
+            nodeStartX: 150,
+            nodeStartY: 200
+        },
+        force: {
+            iterations: 150,
+            repulsion: 20000,
+            idealEdgeLength: 220,
+            separationPadding: 40,
+            separationIterations: 30
+        },
+        weightedTree: {
+            boxStartX: 100,
+            boxStartY: 100,
+            boxHMargin: 400,
+            boxVMargin: 260,
+            separationPadding: 40,
+            separationIterations: 30,
+            tiers: 4,
+            tierSpacing: 180,
+            nodeSpacing: 150,
+            nodeStartX: 200
+        }
+    };
+
+    function mergedOptions(type, overrides = {}) {
+        const base = defaultOptions[type] ? { ...defaultOptions[type] } : {};
+        return { ...base, ...overrides };
+    }
+
     function apply(type, state, options = {}) {
+        const opts = mergedOptions(type, options);
         switch (type) {
             case "grid":
-                gridLayout(state, options);
+                gridLayout(state, opts);
                 break;
             case "circle":
-                circleLayout(state, options);
+                circleLayout(state, opts);
                 break;
             case "hierarchical":
-                hierarchicalLayout(state, options);
+                hierarchicalLayout(state, opts);
                 break;
             case "force":
-                forceLayout(state, options);
+                forceLayout(state, opts);
                 break;
             case "weightedTree":
-                weightedTreeLayout(state, options);
+                weightedTreeLayout(state, opts);
                 break;
             default:
                 console.warn("Unknown layout type:", type);
@@ -148,10 +204,10 @@
         const unboxed = getUnboxedNodes(state);
 
         const boxCols = Math.ceil(Math.sqrt(boxIds.length || 1));
-        const boxHMargin = options.boxHMargin || 400;
-        const boxVMargin = options.boxVMargin || 280;
-        const startX = options.boxStartX || 100;
-        const startY = options.boxStartY || 100;
+        const boxHMargin = options.boxHMargin ?? 400;
+        const boxVMargin = options.boxVMargin ?? 280;
+        const startX = options.boxStartX ?? 100;
+        const startY = options.boxStartY ?? 100;
 
         // 1. arrange boxes in a grid
         boxIds.forEach((id, i) => {
@@ -163,15 +219,15 @@
         });
 
         // resolve overlaps between boxes
-        separateBoxes(state, options.separationPadding || 40, options.separationIterations || 50);
+        separateBoxes(state, options.separationPadding ?? 40, options.separationIterations ?? 50);
 
         // 2. layout unboxed nodes in a grid below all boxes
         if (unboxed.length > 0) {
             const rect = computeBoxesBoundingRect(state);
             const topY = rect ? rect.maxY + 80 : 200;
             const nodeCols = Math.ceil(Math.sqrt(unboxed.length));
-            const nodeHMargin = options.nodeHMargin || 150;
-            const nodeVMargin = options.nodeVMargin || 150;
+            const nodeHMargin = options.nodeHMargin ?? 150;
+            const nodeVMargin = options.nodeVMargin ?? 150;
 
             unboxed.forEach((n, i) => {
                 const row = Math.floor(i / nodeCols);
@@ -201,7 +257,7 @@
         // 1. boxes on outer circle
         if (boxIds.length > 0) {
             const count = boxIds.length;
-            const outerRadius = options.outerRadius || 600;
+            const outerRadius = options.outerRadius ?? 600;
 
             boxIds.forEach((id, i) => {
                 const b = state.boxes[id];
@@ -211,13 +267,13 @@
                 moveBoxAndChildren(state, id, nx, ny);
             });
 
-            separateBoxes(state, options.separationPadding || 40, options.separationIterations || 50);
+            separateBoxes(state, options.separationPadding ?? 40, options.separationIterations ?? 50);
         }
 
         // 2. unboxed nodes on inner circle
         if (unboxed.length > 0) {
             const count = unboxed.length;
-            const innerRadius = options.innerRadius || 350;
+            const innerRadius = options.innerRadius ?? 350;
 
             unboxed.forEach((n, i) => {
                 const angle = (i / count) * Math.PI * 2;
@@ -238,10 +294,10 @@
         // 1. Place boxes in a simple grid at top
         if (boxIds.length > 0) {
             const cols = Math.ceil(Math.sqrt(boxIds.length));
-            const hMargin = options.boxHMargin || 400;
-            const vMargin = options.boxVMargin || 260;
-            const startX = options.boxStartX || 150;
-            const startY = options.boxStartY || 80;
+            const hMargin = options.boxHMargin ?? 400;
+            const vMargin = options.boxVMargin ?? 260;
+            const startX = options.boxStartX ?? 150;
+            const startY = options.boxStartY ?? 80;
 
             boxIds.forEach((id, i) => {
                 const row = Math.floor(i / cols);
@@ -254,7 +310,7 @@
                 );
             });
 
-            separateBoxes(state, options.separationPadding || 40, options.separationIterations || 50);
+            separateBoxes(state, options.separationPadding ?? 40, options.separationIterations ?? 50);
         }
 
         // 2. BFS layers for unboxed nodes beneath boxes
@@ -288,10 +344,10 @@
             });
 
             const rect = computeBoxesBoundingRect(state);
-            const baseY = rect ? rect.maxY + 120 : (options.nodeStartY || 200);
-            const spacingX = options.nodeHMargin || 180;
-            const spacingY = options.nodeVMargin || 120;
-            const startX = options.nodeStartX || 150;
+            const baseY = rect ? rect.maxY + 120 : (options.nodeStartY ?? 200);
+            const spacingX = options.nodeHMargin ?? 180;
+            const spacingY = options.nodeVMargin ?? 120;
+            const startX = options.nodeStartX ?? 150;
 
             Object.keys(groups).forEach(levelStr => {
                 const lvl = parseInt(levelStr, 10);
@@ -313,7 +369,7 @@
         const boxIds = getBoxIds(state);
         const unboxed = getUnboxedNodes(state);
 
-        const iterations = options.iterations || 150;
+        const iterations = options.iterations ?? 150;
 
         // Build force "bodies": boxes + unboxed nodes
         const bodies = [];
@@ -365,7 +421,7 @@
                     const minDist = (a.radius + b.radius) * 0.75;
                     if (dist < 1) dist = 1;
 
-                    const force = (options.repulsion || 20000) / (dist * dist);
+                    const force = (options.repulsion ?? 20000) / (dist * dist);
 
                     dx /= dist;
                     dy /= dist;
@@ -403,7 +459,7 @@
                 let dx = b.x - a.x;
                 let dy = b.y - a.y;
                 let dist = Math.sqrt(dx * dx + dy * dy) + 0.1;
-                const ideal = options.idealEdgeLength || 220;
+                const ideal = options.idealEdgeLength ?? 220;
                 const force = (dist - ideal) * 0.02;
 
                 dx /= dist;
@@ -417,7 +473,7 @@
         }
 
         // After forces, a quick separation pass for boxes to avoid lingering overlaps
-        separateBoxes(state, options.separationPadding || 40, options.separationIterations || 30);
+        separateBoxes(state, options.separationPadding ?? 40, options.separationIterations ?? 30);
     }
 
     // ------------------------
@@ -432,10 +488,10 @@
         if (boxIds.length > 0) {
             const cols = Math.ceil(Math.sqrt(boxIds.length));
             let i = 0;
-            const startX = options.boxStartX || 100;
-            const startY = options.boxStartY || 100;
-            const hMargin = options.boxHMargin || 400;
-            const vMargin = options.boxVMargin || 260;
+            const startX = options.boxStartX ?? 100;
+            const startY = options.boxStartY ?? 100;
+            const hMargin = options.boxHMargin ?? 400;
+            const vMargin = options.boxVMargin ?? 260;
 
             boxIds.forEach(id => {
                 const row = Math.floor(i / cols);
@@ -444,7 +500,7 @@
                 i++;
             });
 
-            separateBoxes(state, 40, 30);
+            separateBoxes(state, options.separationPadding ?? 40, options.separationIterations ?? 30);
         }
 
         const boxRect = computeBoxesBoundingRect(state);
@@ -464,7 +520,7 @@
         const sorted = [...unboxed].sort((a, b) => degree[a.id] - degree[b.id]);
 
         // tiering
-        const tierCount = options.tiers || 4;
+        const tierCount = options.tiers ?? 4;
         const maxDeg = Math.max(...sorted.map(n => degree[n.id]));
         const minDeg = Math.min(...sorted.map(n => degree[n.id]));
         const range = maxDeg - minDeg || 1;
@@ -522,9 +578,9 @@
             });
         }
 
-        const tierSpacing = options.tierSpacing || 180;
-        const nodeSpacing = options.nodeSpacing || 150;
-        const baseX = options.nodeStartX || 200;
+        const tierSpacing = options.tierSpacing ?? 180;
+        const nodeSpacing = options.nodeSpacing ?? 150;
+        const baseX = options.nodeStartX ?? 200;
 
         // 8. Place tiers using X-spreading
         for (let t = 0; t < tiers.length; t++) {
@@ -548,7 +604,9 @@
         grid: gridLayout,
         circle: circleLayout,
         hierarchical: hierarchicalLayout,
-        force: forceLayout
+        weightedTree: weightedTreeLayout,
+        force: forceLayout,
+        defaults: () => JSON.parse(JSON.stringify(defaultOptions))
     };
 
     if (typeof module !== "undefined" && module.exports) {

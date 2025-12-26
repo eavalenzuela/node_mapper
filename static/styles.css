@@ -126,6 +126,25 @@ html, body {
     margin-bottom: 2px;
 }
 
+.layout-settings {
+    border: 1px solid var(--section-border);
+    padding: 8px;
+    border-radius: 6px;
+    margin-top: 8px;
+}
+
+.layout-settings h4 {
+    margin: 0 0 6px 0;
+    font-size: 13px;
+}
+
+.layout-settings label {
+    display: block;
+    font-size: 12px;
+    margin-top: 4px;
+    margin-bottom: 2px;
+}
+
 /* Theme pill */
 .theme-header {
     display: flex;

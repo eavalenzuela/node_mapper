@@ -2,6 +2,8 @@
 
 A lightweight Flask app that serves an in-browser graph editor. The editor lets you create nodes, connect them with edges, group related items into boxes, and experiment with multiple layout algorithms—all without a database or external services.
 
+![main_window](node_mapper_main.png)
+
 ## Features
 - **Interactive graph canvas:** Create, drag, delete, and connect nodes with mouse interactions.
 - **Grouping with boxes:** Draw resizable boxes that move their contained nodes together.
@@ -14,6 +16,8 @@ A lightweight Flask app that serves an in-browser graph editor. The editor lets 
 - **Mini-map:** Overview map that reflects the current viewport and can re-center the main canvas.
 - **Analytics:** Sidebar tools to compute graph metrics and find shortest paths (BFS or Dijkstra), with optional server-side computation for very large graphs.
 - **Import/Export formats:** Load graphs from JSON, CSV edge lists, or GraphML; export to JSON, SVG, or PNG directly from the UI.
+
+![path_trace](path_tracing_stats.png)
 
 ## Layout modes and parameters
 - **Manual:** Drag items directly. Use the **Edges → Routing style** control to toggle straight vs. orthogonal segments.

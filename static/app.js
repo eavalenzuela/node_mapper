@@ -60,6 +60,14 @@ let layerCounter = 0;
 
 const LAYOUT_SETTINGS_KEY = "graph-layout-settings-v1";
 const SNAP_SETTINGS_KEY = "graph-snap-settings-v1";
+const SHAPE_DEFAULTS = {
+    circle: { size: 25, color: "#4682b4", stroke: "#1f2937" },
+    rect: { width: 130, height: 70, color: "#4f8bc9", stroke: "#1f2937" },
+    rounded: { width: 130, height: 70, radius: 18, color: "#57a6a6", stroke: "#1f2937" },
+    diamond: { width: 120, height: 90, color: "#8b6bd6", stroke: "#1f2937" },
+    cylinder: { width: 130, height: 80, color: "#5cab7d", stroke: "#1f2937" },
+    swimlane: { width: 200, height: 120, color: "#f2c94c", stroke: "#1f2937" }
+};
 
 function defaultLayoutSettings() {
     return {
@@ -202,6 +210,74 @@ function saveSnapSettingsToStorage() {
 }
 
 snapSettings = loadSnapSettingsFromStorage();
+
+function getShapeDefaults(shapeType) {
+    return SHAPE_DEFAULTS[shapeType] || SHAPE_DEFAULTS.circle;
+}
+
+function normalizeNode(node = {}) {
+    const shapeType = node.shape || "circle";
+    const defaults = getShapeDefaults(shapeType);
+    const normalized = { ...node };
+    normalized.shape = shapeType;
+    normalized.color = node.color || defaults.color;
+    normalized.stroke = node.stroke || defaults.stroke;
+
+    if (shapeType === "circle") {
+        normalized.size = Number.isFinite(node.size) ? node.size : defaults.size;
+    } else {
+        normalized.width = Number.isFinite(node.width) ? node.width : defaults.width;
+        normalized.height = Number.isFinite(node.height) ? node.height : defaults.height;
+        normalized.size = Number.isFinite(node.size)
+            ? node.size
+            : Math.round(Math.max(normalized.width, normalized.height) / 2);
+    }
+
+    normalized.label = normalized.label ?? "";
+    normalized.desc = normalized.desc ?? "";
+    normalized.group = normalized.group ?? "";
+    return normalized;
+}
+
+function getNodeDimensions(node) {
+    const shapeType = node.shape || "circle";
+    if (shapeType === "circle") {
+        const radius = node.size || getShapeDefaults("circle").size;
+        return {
+            width: radius * 2,
+            height: radius * 2,
+            halfWidth: radius,
+            halfHeight: radius,
+            radius
+        };
+    }
+
+    const defaults = getShapeDefaults(shapeType);
+    const width = Number.isFinite(node.width) ? node.width : defaults.width;
+    const height = Number.isFinite(node.height) ? node.height : defaults.height;
+    return {
+        width,
+        height,
+        halfWidth: width / 2,
+        halfHeight: height / 2,
+        radius: Math.max(width, height) / 2
+    };
+}
+
+function adjustColor(hex, amount) {
+    if (!hex || typeof hex !== "string" || !hex.startsWith("#")) return hex;
+    let raw = hex.slice(1);
+    if (raw.length === 3) {
+        raw = raw.split("").map(ch => ch + ch).join("");
+    }
+    if (raw.length !== 6) return hex;
+    const num = parseInt(raw, 16);
+    const clamp = val => Math.max(0, Math.min(255, val));
+    const r = clamp((num >> 16) + amount);
+    const g = clamp(((num >> 8) & 0xff) + amount);
+    const b = clamp((num & 0xff) + amount);
+    return `#${[r, g, b].map(val => val.toString(16).padStart(2, "0")).join("")}`;
+}
 
 // ---------- LAYERS ----------
 
@@ -392,7 +468,12 @@ function snapshot() {
 
 function restoreFromSnapshot(json) {
     const data = JSON.parse(json);
-    nodes = data.nodes || {};
+    const incomingNodes = data.nodes || {};
+    nodes = {};
+    Object.entries(incomingNodes).forEach(([id, node]) => {
+        const normalized = normalizeNode({ ...node, id: node.id || id });
+        nodes[normalized.id] = normalized;
+    });
     edges = data.edges || [];
     boxes = data.boxes || {};
     layers = normalizeLayers(data.layers || []);
@@ -412,7 +493,12 @@ function pushUndo() {
 }
 
 function applyGraphPayload(graph = {}) {
-    nodes = graph.nodes || {};
+    const incomingNodes = graph.nodes || {};
+    nodes = {};
+    Object.entries(incomingNodes).forEach(([id, node]) => {
+        const normalized = normalizeNode({ ...node, id: node.id || id });
+        nodes[normalized.id] = normalized;
+    });
     edges = (graph.edges || []).map((ed, i) => ({
         id: ed.id || `e${i}`,
         source: ed.source,
@@ -479,9 +565,9 @@ function getSnapCandidates({ excludeNodeId = null, excludeBoxId = null } = {}) {
     Object.values(nodes).forEach(n => {
         if (n.id === excludeNodeId) return;
         if (!isLayerVisible(n.layer)) return;
-        const r = n.size || 25;
-        x.push(n.x - r, n.x + r);
-        y.push(n.y - r, n.y + r);
+        const { halfWidth, halfHeight } = getNodeDimensions(n);
+        x.push(n.x - halfWidth, n.x + halfWidth);
+        y.push(n.y - halfHeight, n.y + halfHeight);
     });
 
     Object.values(boxes).forEach(b => {
@@ -512,7 +598,7 @@ function applyNodeSnapping(pos, node) {
 
     const guides = { vertical: [], horizontal: [] };
     const options = getSnapCandidates({ excludeNodeId: node.id });
-    const radius = node.size || 25;
+    const { halfWidth, halfHeight } = getNodeDimensions(node);
 
     const xCandidates = [];
     const yCandidates = [];
@@ -526,12 +612,12 @@ function applyNodeSnapping(pos, node) {
 
     if (snapSettings.objectEnabled) {
         options.x.forEach(edge => {
-            xCandidates.push({ value: edge + radius, guide: edge });
-            xCandidates.push({ value: edge - radius, guide: edge });
+            xCandidates.push({ value: edge + halfWidth, guide: edge });
+            xCandidates.push({ value: edge - halfWidth, guide: edge });
         });
         options.y.forEach(edge => {
-            yCandidates.push({ value: edge + radius, guide: edge });
-            yCandidates.push({ value: edge - radius, guide: edge });
+            yCandidates.push({ value: edge + halfHeight, guide: edge });
+            yCandidates.push({ value: edge - halfHeight, guide: edge });
         });
     }
 
@@ -954,6 +1040,16 @@ function updateModeButtons() {
     });
 }
 updateModeButtons();
+
+const paletteItems = document.querySelectorAll(".shape-item");
+paletteItems.forEach(item => {
+    item.addEventListener("dragstart", e => {
+        const shapeType = item.dataset.shape;
+        if (!shapeType || !e.dataTransfer) return;
+        e.dataTransfer.setData("text/plain", shapeType);
+        e.dataTransfer.effectAllowed = "copy";
+    });
+});
 
 // undo / redo
 document.getElementById("undo-btn").addEventListener("click", () => {
@@ -1588,6 +1684,29 @@ svg.addEventListener("pointerdown", e => {
     }
 });
 
+svg.addEventListener("dragover", e => {
+    if (!e.dataTransfer) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+});
+
+svg.addEventListener("drop", e => {
+    if (!e.dataTransfer) return;
+    const shapeType = e.dataTransfer.getData("text/plain");
+    if (!shapeType) return;
+    e.preventDefault();
+
+    if (isLayerLocked(activeLayerId)) {
+        alert("Active layer is locked. Unlock it to add nodes.");
+        return;
+    }
+
+    pushUndo();
+    const pos = screenToWorld(e.clientX, e.clientY);
+    createNodeAt(pos.x, pos.y, { shape: shapeType });
+    render();
+});
+
 svg.addEventListener("pointermove", e => {
     // Dragging a node
     if (draggingNodeId) {
@@ -1711,21 +1830,28 @@ svg.addEventListener("pointerup", e => {
 
 // ---------- CREATION / DELETION HELPERS ----------
 
-function createNodeAt(x, y) {
+function createNodeAt(x, y, options = {}) {
     ensureActiveLayer();
     const id = "n" + (nodeCounter++);
-    nodes[id] = {
+    const shapeType = options.shape || "circle";
+    const defaults = getShapeDefaults(shapeType);
+    const baseNode = {
         id,
         x,
         y,
         label: "Node " + nodeCounter,
-        color: "#4682b4",
-        size: 25,
+        color: options.color || defaults.color,
+        stroke: options.stroke || defaults.stroke,
+        size: options.size || defaults.size,
+        width: options.width || defaults.width,
+        height: options.height || defaults.height,
+        shape: shapeType,
         desc: "",
         group: "",
         box: null,
         layer: activeLayerId
     };
+    nodes[id] = normalizeNode(baseNode);
     return id;
 }
 
@@ -1868,13 +1994,13 @@ function alignNodes(mode) {
     pushUndo();
 
     const bounds = targets.map(node => {
-        const r = node.size || 25;
+        const { halfWidth, halfHeight } = getNodeDimensions(node);
         return {
             node,
-            left: node.x - r,
-            right: node.x + r,
-            top: node.y - r,
-            bottom: node.y + r,
+            left: node.x - halfWidth,
+            right: node.x + halfWidth,
+            top: node.y - halfHeight,
+            bottom: node.y + halfHeight,
             centerX: node.x,
             centerY: node.y
         };
@@ -1888,13 +2014,13 @@ function alignNodes(mode) {
     const centerY = (minTop + maxBottom) / 2;
 
     bounds.forEach(b => {
-        const r = b.node.size || 25;
-        if (mode === "left") b.node.x = minLeft + r;
+        const { halfWidth, halfHeight } = getNodeDimensions(b.node);
+        if (mode === "left") b.node.x = minLeft + halfWidth;
         if (mode === "center") b.node.x = centerX;
-        if (mode === "right") b.node.x = maxRight - r;
-        if (mode === "top") b.node.y = minTop + r;
+        if (mode === "right") b.node.x = maxRight - halfWidth;
+        if (mode === "top") b.node.y = minTop + halfHeight;
         if (mode === "middle") b.node.y = centerY;
-        if (mode === "bottom") b.node.y = maxBottom - r;
+        if (mode === "bottom") b.node.y = maxBottom - halfHeight;
         updateNodeBoxMembership(b.node.id);
     });
 
@@ -2381,26 +2507,129 @@ function render() {
     });
 
     // nodes
+    const computed = getComputedStyle(document.body);
+    const fallbackStroke = computed.getPropertyValue("--node-stroke")?.trim() || "#1f2937";
+
     Object.values(nodes).forEach(n => {
         if (!visibleNodes[n.id]) return;
 
-        const r = n.size || 25;
+        const shapeType = n.shape || "circle";
+        const { width, height, halfWidth, halfHeight, radius } = getNodeDimensions(n);
         const onPath = pathHighlights.nodes.has(n.id);
+        const fill = n.color || getShapeDefaults(shapeType).color;
+        const baseStroke = n.stroke || fallbackStroke;
+        const stroke = onPath ? "#ff2d55" : (n.id === selectedNodeId ? "#ff9900" : baseStroke);
+        const strokeWidth = onPath ? "4" : (n.id === selectedNodeId ? "3" : "1");
+        const nodeGroup = document.createElementNS(NS, "g");
+        nodeGroup.dataset.nodeId = n.id;
 
-        const circle = document.createElementNS(NS, "circle");
-        circle.setAttribute("cx", n.x);
-        circle.setAttribute("cy", n.y);
-        circle.setAttribute("r", r);
-        circle.setAttribute("fill", n.color || "#4682b4");
-        circle.setAttribute("stroke", onPath ? "#ff2d55" : (n.id === selectedNodeId ? "#ff9900" : "#333"));
-        circle.setAttribute("stroke-width", onPath ? "4" : (n.id === selectedNodeId ? "3" : "1"));
-        circle.dataset.nodeId = n.id;
-        viewport.appendChild(circle);
+        if (shapeType === "circle") {
+            const circle = document.createElementNS(NS, "circle");
+            circle.setAttribute("cx", n.x);
+            circle.setAttribute("cy", n.y);
+            circle.setAttribute("r", radius);
+            circle.setAttribute("fill", fill);
+            circle.setAttribute("stroke", stroke);
+            circle.setAttribute("stroke-width", strokeWidth);
+            circle.dataset.nodeId = n.id;
+            nodeGroup.appendChild(circle);
+        } else if (shapeType === "diamond") {
+            const diamond = document.createElementNS(NS, "polygon");
+            const points = [
+                `${n.x},${n.y - halfHeight}`,
+                `${n.x + halfWidth},${n.y}`,
+                `${n.x},${n.y + halfHeight}`,
+                `${n.x - halfWidth},${n.y}`
+            ].join(" ");
+            diamond.setAttribute("points", points);
+            diamond.setAttribute("fill", fill);
+            diamond.setAttribute("stroke", stroke);
+            diamond.setAttribute("stroke-width", strokeWidth);
+            diamond.dataset.nodeId = n.id;
+            nodeGroup.appendChild(diamond);
+        } else if (shapeType === "cylinder") {
+            const capHeight = Math.min(24, height * 0.3);
+            const capRadius = capHeight / 2;
+            const rect = document.createElementNS(NS, "rect");
+            rect.setAttribute("x", n.x - halfWidth);
+            rect.setAttribute("y", n.y - halfHeight + capRadius);
+            rect.setAttribute("width", width);
+            rect.setAttribute("height", Math.max(0, height - capHeight));
+            rect.setAttribute("fill", fill);
+            rect.setAttribute("stroke", stroke);
+            rect.setAttribute("stroke-width", strokeWidth);
+            rect.dataset.nodeId = n.id;
+            nodeGroup.appendChild(rect);
+
+            const top = document.createElementNS(NS, "ellipse");
+            top.setAttribute("cx", n.x);
+            top.setAttribute("cy", n.y - halfHeight + capRadius);
+            top.setAttribute("rx", halfWidth);
+            top.setAttribute("ry", capRadius);
+            top.setAttribute("fill", adjustColor(fill, 10) || fill);
+            top.setAttribute("stroke", stroke);
+            top.setAttribute("stroke-width", strokeWidth);
+            top.dataset.nodeId = n.id;
+            nodeGroup.appendChild(top);
+
+            const bottom = document.createElementNS(NS, "ellipse");
+            bottom.setAttribute("cx", n.x);
+            bottom.setAttribute("cy", n.y + halfHeight - capRadius);
+            bottom.setAttribute("rx", halfWidth);
+            bottom.setAttribute("ry", capRadius);
+            bottom.setAttribute("fill", adjustColor(fill, -12) || fill);
+            bottom.setAttribute("stroke", stroke);
+            bottom.setAttribute("stroke-width", strokeWidth);
+            bottom.dataset.nodeId = n.id;
+            nodeGroup.appendChild(bottom);
+        } else {
+            const rect = document.createElementNS(NS, "rect");
+            rect.setAttribute("x", n.x - halfWidth);
+            rect.setAttribute("y", n.y - halfHeight);
+            rect.setAttribute("width", width);
+            rect.setAttribute("height", height);
+            if (shapeType === "rounded" || shapeType === "swimlane") {
+                rect.setAttribute("rx", getShapeDefaults(shapeType).radius || 14);
+            } else {
+                rect.setAttribute("rx", 4);
+            }
+            rect.setAttribute("fill", fill);
+            rect.setAttribute("stroke", stroke);
+            rect.setAttribute("stroke-width", strokeWidth);
+            rect.dataset.nodeId = n.id;
+            nodeGroup.appendChild(rect);
+
+            if (shapeType === "swimlane") {
+                const headerHeight = Math.min(28, height * 0.25);
+                const header = document.createElementNS(NS, "rect");
+                header.setAttribute("x", n.x - halfWidth);
+                header.setAttribute("y", n.y - halfHeight);
+                header.setAttribute("width", width);
+                header.setAttribute("height", headerHeight);
+                header.setAttribute("rx", getShapeDefaults(shapeType).radius || 14);
+                header.setAttribute("fill", adjustColor(fill, 12) || fill);
+                header.setAttribute("stroke", "none");
+                header.dataset.nodeId = n.id;
+                nodeGroup.appendChild(header);
+
+                const divider = document.createElementNS(NS, "line");
+                divider.setAttribute("x1", n.x - halfWidth);
+                divider.setAttribute("y1", n.y - halfHeight + headerHeight);
+                divider.setAttribute("x2", n.x + halfWidth);
+                divider.setAttribute("y2", n.y - halfHeight + headerHeight);
+                divider.setAttribute("stroke", stroke);
+                divider.setAttribute("stroke-width", Math.max(1, parseFloat(strokeWidth) - 1));
+                divider.dataset.nodeId = n.id;
+                nodeGroup.appendChild(divider);
+            }
+        }
+
+        viewport.appendChild(nodeGroup);
 
         const label = document.createElementNS(NS, "text");
         label.textContent = n.label || n.id;
         label.setAttribute("x", n.x);
-        label.setAttribute("y", n.y + r + 14);
+        label.setAttribute("y", n.y + halfHeight + 16);
         label.setAttribute("font-size", "12");
         label.setAttribute("text-anchor", "middle");
         label.setAttribute("class", "node-label");
@@ -2466,7 +2695,9 @@ function renderMinimap() {
 
     Object.values(nodes).forEach(n => {
         if (!isNodeVisible(n)) return;
-        points.push({ x: n.x, y: n.y });
+        const { halfWidth, halfHeight } = getNodeDimensions(n);
+        points.push({ x: n.x - halfWidth, y: n.y - halfHeight });
+        points.push({ x: n.x + halfWidth, y: n.y + halfHeight });
     });
     Object.values(boxes).forEach(b => {
         if (!isLayerVisible(b.layer)) return;
@@ -2572,10 +2803,12 @@ if (minimap) {
 
         // reuse extents logic
         let points = [];
-        Object.values(nodes).forEach(n => {
-            if (!isNodeVisible(n)) return;
-            points.push({ x: n.x, y: n.y });
-        });
+    Object.values(nodes).forEach(n => {
+        if (!isNodeVisible(n)) return;
+        const { halfWidth, halfHeight } = getNodeDimensions(n);
+        points.push({ x: n.x - halfWidth, y: n.y - halfHeight });
+        points.push({ x: n.x + halfWidth, y: n.y + halfHeight });
+    });
         Object.values(boxes).forEach(b => {
             if (!isLayerVisible(b.layer)) return;
             points.push({ x: b.x, y: b.y });

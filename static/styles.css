@@ -17,7 +17,10 @@
     --minimap-bg: #ffffff;
     --minimap-border: #ccc;
     --node-label: #0f172a;
+    --node-stroke: #1f2937;
     --guide-color: #2563eb;
+    --palette-fill: #cbd5f5;
+    --palette-stroke: #1f2937;
 }
 
 body.dark {
@@ -39,7 +42,10 @@ body.dark {
     --minimap-bg: #0f172a;
     --minimap-border: #1f2937;
     --node-label: #ffffff;
+    --node-stroke: #e2e8f0;
     --guide-color: #60a5fa;
+    --palette-fill: #334155;
+    --palette-stroke: #e2e8f0;
 }
 
 html, body {
@@ -179,6 +185,41 @@ body.dark .subsection {
 
 .subsection-header h4 {
     margin: 0;
+}
+
+.shape-palette {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.shape-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--section-border);
+    background: rgba(255, 255, 255, 0.4);
+    cursor: grab;
+    font-size: 12px;
+    color: var(--sidebar-text);
+}
+
+body.dark .shape-item {
+    background: rgba(15, 23, 42, 0.65);
+}
+
+.shape-item:active {
+    cursor: grabbing;
+}
+
+.shape-item svg {
+    width: 28px;
+    height: 20px;
+    fill: var(--palette-fill);
+    stroke: var(--palette-stroke);
+    stroke-width: 1.5;
 }
 
 #sidebar button {

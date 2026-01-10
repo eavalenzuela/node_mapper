@@ -154,11 +154,16 @@ html, body {
 }
 
 #tab-panels {
+    display: none;
     padding: 8px 16px;
     border-bottom: 1px solid var(--sidebar-border);
     background: var(--sidebar-bg);
     max-height: 35vh;
     overflow-y: auto;
+}
+
+#tab-panels.has-active {
+    display: block;
 }
 
 .tab-panel {

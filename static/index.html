@@ -48,6 +48,49 @@
 
                 <div class="subsection">
                     <div class="subsection-header">
+                        <h4>Shape Palette</h4>
+                        <small>Drag a shape onto the canvas to create a node.</small>
+                    </div>
+                    <div class="shape-palette">
+                        <div class="shape-item" draggable="true" data-shape="rect">
+                            <svg viewBox="0 0 36 24" aria-hidden="true">
+                                <rect x="4" y="4" width="28" height="16" rx="2"></rect>
+                            </svg>
+                            <span>Rect</span>
+                        </div>
+                        <div class="shape-item" draggable="true" data-shape="rounded">
+                            <svg viewBox="0 0 36 24" aria-hidden="true">
+                                <rect x="4" y="4" width="28" height="16" rx="6"></rect>
+                            </svg>
+                            <span>Rounded</span>
+                        </div>
+                        <div class="shape-item" draggable="true" data-shape="diamond">
+                            <svg viewBox="0 0 36 24" aria-hidden="true">
+                                <polygon points="18,3 33,12 18,21 3,12"></polygon>
+                            </svg>
+                            <span>Diamond</span>
+                        </div>
+                        <div class="shape-item" draggable="true" data-shape="cylinder">
+                            <svg viewBox="0 0 36 24" aria-hidden="true">
+                                <rect x="6" y="6" width="24" height="12"></rect>
+                                <ellipse cx="18" cy="6" rx="12" ry="4"></ellipse>
+                                <ellipse cx="18" cy="18" rx="12" ry="4"></ellipse>
+                            </svg>
+                            <span>Cylinder</span>
+                        </div>
+                        <div class="shape-item" draggable="true" data-shape="swimlane">
+                            <svg viewBox="0 0 36 24" aria-hidden="true">
+                                <rect x="4" y="4" width="28" height="16" rx="4"></rect>
+                                <rect x="4" y="4" width="28" height="6" rx="4"></rect>
+                                <line x1="4" y1="10" x2="32" y2="10"></line>
+                            </svg>
+                            <span>Swimlane</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="subsection">
+                    <div class="subsection-header">
                         <h4>Search / Filter</h4>
                         <small>Hide nodes that do not match your query.</small>
                     </div>

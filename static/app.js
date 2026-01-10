@@ -55,6 +55,7 @@ let edgeCounter = 0;
 let boxCounter = 0;
 
 const LAYOUT_SETTINGS_KEY = "graph-layout-settings-v1";
+const SNAP_SETTINGS_KEY = "graph-snap-settings-v1";
 
 function defaultLayoutSettings() {
     return {
@@ -114,6 +115,14 @@ function defaultLayoutSettings() {
 
 let layoutSettings = defaultLayoutSettings();
 const ANALYTICS_BACKEND_THRESHOLD = 500;
+let snapSettings = {
+    gridEnabled: true,
+    gridSize: 20,
+    objectEnabled: true,
+    showGuides: true,
+    threshold: 8
+};
+let activeGuides = { vertical: [], horizontal: [] };
 
 const analyticsState = {
     stats: null,
@@ -161,6 +170,34 @@ function saveLayoutSettingsToStorage() {
 }
 
 layoutSettings = loadLayoutSettingsFromStorage();
+
+function defaultSnapSettings() {
+    return {
+        gridEnabled: true,
+        gridSize: 20,
+        objectEnabled: true,
+        showGuides: true,
+        threshold: 8
+    };
+}
+
+function loadSnapSettingsFromStorage() {
+    const raw = localStorage.getItem(SNAP_SETTINGS_KEY);
+    if (!raw) return defaultSnapSettings();
+    try {
+        const parsed = JSON.parse(raw);
+        return { ...defaultSnapSettings(), ...(parsed || {}) };
+    } catch (e) {
+        console.warn("Could not parse stored snap settings", e);
+        return defaultSnapSettings();
+    }
+}
+
+function saveSnapSettingsToStorage() {
+    localStorage.setItem(SNAP_SETTINGS_KEY, JSON.stringify(snapSettings));
+}
+
+snapSettings = loadSnapSettingsFromStorage();
 
 // ---------- UTILITIES ----------
 
@@ -230,6 +267,129 @@ function screenToWorld(clientX, clientY) {
 
 function resetPathHighlights() {
     pathHighlights = { nodes: new Set(), edges: new Set() };
+}
+
+function isNodeVisible(node) {
+    if (!searchTerm) return true;
+    const text = ((node.label || "") + " " + (node.desc || "") + " " + (node.group || "")).toLowerCase();
+    return text.includes(searchTerm);
+}
+
+function clearActiveGuides() {
+    activeGuides = { vertical: [], horizontal: [] };
+}
+
+function getSnapCandidates({ excludeNodeId = null, excludeBoxId = null } = {}) {
+    const x = [];
+    const y = [];
+
+    Object.values(nodes).forEach(n => {
+        if (n.id === excludeNodeId) return;
+        const r = n.size || 25;
+        x.push(n.x - r, n.x + r);
+        y.push(n.y - r, n.y + r);
+    });
+
+    Object.values(boxes).forEach(b => {
+        if (b.id === excludeBoxId) return;
+        x.push(b.x, b.x + b.width);
+        y.push(b.y, b.y + b.height);
+    });
+
+    return { x, y };
+}
+
+function pickSnapCandidate(value, candidates, threshold) {
+    let best = { value, guide: null, distance: threshold + 1 };
+    candidates.forEach(option => {
+        const distance = Math.abs(value - option.value);
+        if (distance < best.distance) {
+            best = { value: option.value, guide: option.guide, distance };
+        }
+    });
+    return best;
+}
+
+function applyNodeSnapping(pos, node) {
+    if (!snapSettings.gridEnabled && !snapSettings.objectEnabled) {
+        return { x: pos.x, y: pos.y, guides: { vertical: [], horizontal: [] } };
+    }
+
+    const guides = { vertical: [], horizontal: [] };
+    const options = getSnapCandidates({ excludeNodeId: node.id });
+    const radius = node.size || 25;
+
+    const xCandidates = [];
+    const yCandidates = [];
+
+    if (snapSettings.gridEnabled) {
+        const gridX = Math.round(pos.x / snapSettings.gridSize) * snapSettings.gridSize;
+        const gridY = Math.round(pos.y / snapSettings.gridSize) * snapSettings.gridSize;
+        xCandidates.push({ value: gridX, guide: gridX });
+        yCandidates.push({ value: gridY, guide: gridY });
+    }
+
+    if (snapSettings.objectEnabled) {
+        options.x.forEach(edge => {
+            xCandidates.push({ value: edge + radius, guide: edge });
+            xCandidates.push({ value: edge - radius, guide: edge });
+        });
+        options.y.forEach(edge => {
+            yCandidates.push({ value: edge + radius, guide: edge });
+            yCandidates.push({ value: edge - radius, guide: edge });
+        });
+    }
+
+    const bestX = pickSnapCandidate(pos.x, xCandidates, snapSettings.threshold);
+    const bestY = pickSnapCandidate(pos.y, yCandidates, snapSettings.threshold);
+
+    const x = bestX.distance <= snapSettings.threshold ? bestX.value : pos.x;
+    const y = bestY.distance <= snapSettings.threshold ? bestY.value : pos.y;
+
+    if (bestX.distance <= snapSettings.threshold) guides.vertical.push(bestX.guide);
+    if (bestY.distance <= snapSettings.threshold) guides.horizontal.push(bestY.guide);
+
+    return { x, y, guides };
+}
+
+function applyBoxSnapping(pos, box) {
+    if (!snapSettings.gridEnabled && !snapSettings.objectEnabled) {
+        return { x: pos.x, y: pos.y, guides: { vertical: [], horizontal: [] } };
+    }
+
+    const guides = { vertical: [], horizontal: [] };
+    const options = getSnapCandidates({ excludeBoxId: box.id });
+    const xCandidates = [];
+    const yCandidates = [];
+
+    if (snapSettings.gridEnabled) {
+        const gridX = Math.round(pos.x / snapSettings.gridSize) * snapSettings.gridSize;
+        const gridY = Math.round(pos.y / snapSettings.gridSize) * snapSettings.gridSize;
+        xCandidates.push({ value: gridX, guide: gridX });
+        yCandidates.push({ value: gridY, guide: gridY });
+    }
+
+    if (snapSettings.objectEnabled) {
+        options.x.forEach(edge => {
+            xCandidates.push({ value: edge, guide: edge });
+            xCandidates.push({ value: edge - box.width, guide: edge });
+        });
+        options.y.forEach(edge => {
+            yCandidates.push({ value: edge, guide: edge });
+            yCandidates.push({ value: edge - box.height, guide: edge });
+        });
+    }
+
+    const bestX = pickSnapCandidate(pos.x, xCandidates, snapSettings.threshold);
+    const bestY = pickSnapCandidate(pos.y, yCandidates, snapSettings.threshold);
+
+    const x = bestX.distance <= snapSettings.threshold ? bestX.value : pos.x;
+    const y = bestY.distance <= snapSettings.threshold ? bestY.value : pos.y;
+
+    if (bestX.distance <= snapSettings.threshold) guides.vertical.push(bestX.guide);
+    if (bestY.distance <= snapSettings.threshold) guides.horizontal.push(bestY.guide);
+
+    return { x, y, guides };
 }
 
 // ---------- ANALYTICS HELPERS ----------
@@ -1186,14 +1346,18 @@ svg.addEventListener("pointermove", e => {
     if (draggingNodeId) {
         const pos = screenToWorld(e.clientX, e.clientY);
         const n = nodes[draggingNodeId];
-        n.x = pos.x - dragOffset.x;
-        n.y = pos.y - dragOffset.y;
+        const raw = { x: pos.x - dragOffset.x, y: pos.y - dragOffset.y };
+        const snapped = applyNodeSnapping(raw, n);
+        n.x = snapped.x;
+        n.y = snapped.y;
+        activeGuides = snapSettings.showGuides ? snapped.guides : { vertical: [], horizontal: [] };
         render();
         return;
     }
 
     // Resizing a box
     if (resizingBoxId) {
+        clearActiveGuides();
         const b = boxes[resizingBoxId];
         const pos = screenToWorld(e.clientX, e.clientY);
 
@@ -1238,8 +1402,11 @@ svg.addEventListener("pointermove", e => {
         const oldX = b.x;
         const oldY = b.y;
 
-        b.x = pos.x - dragBoxOffset.x;
-        b.y = pos.y - dragBoxOffset.y;
+        const raw = { x: pos.x - dragBoxOffset.x, y: pos.y - dragBoxOffset.y };
+        const snapped = applyBoxSnapping(raw, b);
+        b.x = snapped.x;
+        b.y = snapped.y;
+        activeGuides = snapSettings.showGuides ? snapped.guides : { vertical: [], horizontal: [] };
 
         const dx = b.x - oldX;
         const dy = b.y - oldY;
@@ -1258,6 +1425,7 @@ svg.addEventListener("pointermove", e => {
 
     // Panning
     if (panning) {
+        clearActiveGuides();
         const dx = e.clientX - panStart.x;
         const dy = e.clientY - panStart.y;
         view.tx = panViewStart.tx + dx;
@@ -1288,6 +1456,10 @@ svg.addEventListener("pointerup", e => {
     draggingNodeId = null;
     draggingBoxId = null;
     panning = false;
+    if (activeGuides.vertical.length || activeGuides.horizontal.length) {
+        clearActiveGuides();
+        render();
+    }
 });
 
 // ---------- CREATION / DELETION HELPERS ----------
@@ -1410,6 +1582,80 @@ function updateBoxEditor() {
 
     const b = boxes[selectedBoxId];
     document.getElementById("edit-box-label").value = b.label;
+}
+
+function getArrangeTargets() {
+    const candidates = [];
+    if (selectedBoxId && boxes[selectedBoxId]) {
+        boxes[selectedBoxId].nodes.forEach(id => {
+            const node = nodes[id];
+            if (node && isNodeVisible(node)) candidates.push(node);
+        });
+        if (candidates.length) return candidates;
+    }
+
+    Object.values(nodes).forEach(node => {
+        if (isNodeVisible(node)) candidates.push(node);
+    });
+    return candidates;
+}
+
+function alignNodes(mode) {
+    const targets = getArrangeTargets();
+    if (targets.length < 2) return;
+    pushUndo();
+
+    const bounds = targets.map(node => {
+        const r = node.size || 25;
+        return {
+            node,
+            left: node.x - r,
+            right: node.x + r,
+            top: node.y - r,
+            bottom: node.y + r,
+            centerX: node.x,
+            centerY: node.y
+        };
+    });
+
+    const minLeft = Math.min(...bounds.map(b => b.left));
+    const maxRight = Math.max(...bounds.map(b => b.right));
+    const minTop = Math.min(...bounds.map(b => b.top));
+    const maxBottom = Math.max(...bounds.map(b => b.bottom));
+    const centerX = (minLeft + maxRight) / 2;
+    const centerY = (minTop + maxBottom) / 2;
+
+    bounds.forEach(b => {
+        const r = b.node.size || 25;
+        if (mode === "left") b.node.x = minLeft + r;
+        if (mode === "center") b.node.x = centerX;
+        if (mode === "right") b.node.x = maxRight - r;
+        if (mode === "top") b.node.y = minTop + r;
+        if (mode === "middle") b.node.y = centerY;
+        if (mode === "bottom") b.node.y = maxBottom - r;
+        updateNodeBoxMembership(b.node.id);
+    });
+
+    render();
+}
+
+function distributeNodes(axis) {
+    const targets = getArrangeTargets();
+    if (targets.length < 3) return;
+    pushUndo();
+
+    const sorted = [...targets].sort((a, b) => axis === "x" ? a.x - b.x : a.y - b.y);
+    const start = axis === "x" ? sorted[0].x : sorted[0].y;
+    const end = axis === "x" ? sorted[sorted.length - 1].x : sorted[sorted.length - 1].y;
+    const step = (end - start) / (sorted.length - 1 || 1);
+
+    sorted.forEach((node, index) => {
+        if (axis === "x") node.x = start + step * index;
+        if (axis === "y") node.y = start + step * index;
+        updateNodeBoxMembership(node.id);
+    });
+
+    render();
 }
 
 function getNumberInputValue(id, fallback) {
@@ -1570,6 +1816,121 @@ if (edgeRoutingSelect) {
     });
 }
 
+function syncSnapControlsFromSettings() {
+    const gridToggle = document.getElementById("snap-grid-toggle");
+    const gridSizeInput = document.getElementById("snap-grid-size");
+    const objectToggle = document.getElementById("snap-object-toggle");
+    const guideToggle = document.getElementById("guide-toggle");
+
+    if (gridToggle) gridToggle.checked = !!snapSettings.gridEnabled;
+    if (gridSizeInput) gridSizeInput.value = snapSettings.gridSize;
+    if (objectToggle) objectToggle.checked = !!snapSettings.objectEnabled;
+    if (guideToggle) guideToggle.checked = !!snapSettings.showGuides;
+}
+
+const snapGridToggle = document.getElementById("snap-grid-toggle");
+if (snapGridToggle) {
+    snapGridToggle.addEventListener("change", e => {
+        snapSettings.gridEnabled = e.target.checked;
+        saveSnapSettingsToStorage();
+    });
+}
+
+const snapGridSize = document.getElementById("snap-grid-size");
+if (snapGridSize) {
+    snapGridSize.addEventListener("change", e => {
+        const value = parseFloat(e.target.value);
+        snapSettings.gridSize = Number.isFinite(value) && value > 0 ? value : snapSettings.gridSize;
+        e.target.value = snapSettings.gridSize;
+        saveSnapSettingsToStorage();
+    });
+}
+
+const snapObjectToggle = document.getElementById("snap-object-toggle");
+if (snapObjectToggle) {
+    snapObjectToggle.addEventListener("change", e => {
+        snapSettings.objectEnabled = e.target.checked;
+        saveSnapSettingsToStorage();
+    });
+}
+
+const guideToggle = document.getElementById("guide-toggle");
+if (guideToggle) {
+    guideToggle.addEventListener("change", e => {
+        snapSettings.showGuides = e.target.checked;
+        if (!snapSettings.showGuides) clearActiveGuides();
+        saveSnapSettingsToStorage();
+        render();
+    });
+}
+
+const alignButtons = {
+    left: document.getElementById("align-left"),
+    center: document.getElementById("align-center"),
+    right: document.getElementById("align-right"),
+    top: document.getElementById("align-top"),
+    middle: document.getElementById("align-middle"),
+    bottom: document.getElementById("align-bottom")
+};
+
+Object.entries(alignButtons).forEach(([mode, button]) => {
+    if (!button) return;
+    button.addEventListener("click", () => alignNodes(mode));
+});
+
+const distributeH = document.getElementById("distribute-horizontal");
+if (distributeH) {
+    distributeH.addEventListener("click", () => distributeNodes("x"));
+}
+
+const distributeV = document.getElementById("distribute-vertical");
+if (distributeV) {
+    distributeV.addEventListener("click", () => distributeNodes("y"));
+}
+
+document.addEventListener("keydown", e => {
+    const tag = e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
+    if (!e.ctrlKey || !e.shiftKey) return;
+
+    switch (e.key.toLowerCase()) {
+        case "arrowleft":
+            e.preventDefault();
+            alignNodes("left");
+            break;
+        case "arrowright":
+            e.preventDefault();
+            alignNodes("right");
+            break;
+        case "arrowup":
+            e.preventDefault();
+            alignNodes("top");
+            break;
+        case "arrowdown":
+            e.preventDefault();
+            alignNodes("bottom");
+            break;
+        case "c":
+            e.preventDefault();
+            alignNodes("center");
+            break;
+        case "m":
+            e.preventDefault();
+            alignNodes("middle");
+            break;
+        case "h":
+            e.preventDefault();
+            distributeNodes("x");
+            break;
+        case "v":
+            e.preventDefault();
+            distributeNodes("y");
+            break;
+        default:
+            break;
+    }
+});
+
 // ---------- RENDER ----------
 
 function getEdgePointsForRouting(src, tgt) {
@@ -1629,15 +1990,9 @@ function render() {
 
     // visibility based on search
     let visibleNodes = {};
-    const term = searchTerm;
     Object.keys(nodes).forEach(id => {
         const n = nodes[id];
-        if (!term) {
-            visibleNodes[id] = true;
-        } else {
-            const text = ((n.label || "") + " " + (n.desc || "") + " " + (n.group || "")).toLowerCase();
-            visibleNodes[id] = text.includes(term);
-        }
+        visibleNodes[id] = isNodeVisible(n);
     });
 
     // draw boxes first
@@ -1787,6 +2142,33 @@ function render() {
         label.dataset.nodeId = n.id;
         viewport.appendChild(label);
     });
+
+    if (snapSettings.showGuides && (activeGuides.vertical.length || activeGuides.horizontal.length)) {
+        const guideLayer = document.createElementNS(NS, "g");
+        guideLayer.setAttribute("class", "snap-guides");
+
+        [...new Set(activeGuides.vertical)].forEach(x => {
+            const line = document.createElementNS(NS, "line");
+            line.setAttribute("x1", x);
+            line.setAttribute("y1", -5000);
+            line.setAttribute("x2", x);
+            line.setAttribute("y2", 5000);
+            line.setAttribute("class", "snap-guide");
+            guideLayer.appendChild(line);
+        });
+
+        [...new Set(activeGuides.horizontal)].forEach(y => {
+            const line = document.createElementNS(NS, "line");
+            line.setAttribute("x1", -5000);
+            line.setAttribute("y1", y);
+            line.setAttribute("x2", 5000);
+            line.setAttribute("y2", y);
+            line.setAttribute("class", "snap-guide");
+            guideLayer.appendChild(line);
+        });
+
+        viewport.appendChild(guideLayer);
+    }
 
     updateNodeEditor();
     updateEdgeEditor();
@@ -1953,6 +2335,7 @@ if (minimap) {
 // ---------- INIT ----------
 
 syncLayoutControlsFromSettings();
+syncSnapControlsFromSettings();
 initTheme();
 updateAutosaveInfo();
 renderAnalyticsPanel();

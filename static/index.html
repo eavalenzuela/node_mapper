@@ -232,6 +232,49 @@
                     </select>
                     <small>Use orthogonal routing to reduce crossings and clutter.</small>
                 </div>
+
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>Snapping & Guides</h4>
+                        <small>Snap dragged items to the grid or nearby edges.</small>
+                    </div>
+                    <label class="checkbox-inline">
+                        <input id="snap-grid-toggle" type="checkbox">
+                        Snap to grid
+                    </label>
+                    <label>Grid size</label>
+                    <input id="snap-grid-size" type="number" min="5" step="5">
+                    <label class="checkbox-inline">
+                        <input id="snap-object-toggle" type="checkbox">
+                        Snap to object edges
+                    </label>
+                    <label class="checkbox-inline">
+                        <input id="guide-toggle" type="checkbox">
+                        Show guide lines while dragging
+                    </label>
+                </div>
+
+                <div class="subsection">
+                    <div class="subsection-header">
+                        <h4>Align & Distribute</h4>
+                        <small>Applies to nodes in the selected box or all visible nodes.</small>
+                    </div>
+                    <div class="arrange-grid">
+                        <button id="align-left">Align Left</button>
+                        <button id="align-center">Align Center</button>
+                        <button id="align-right">Align Right</button>
+                    </div>
+                    <div class="arrange-grid">
+                        <button id="align-top">Align Top</button>
+                        <button id="align-middle">Align Middle</button>
+                        <button id="align-bottom">Align Bottom</button>
+                    </div>
+                    <div class="arrange-grid arrange-grid-two">
+                        <button id="distribute-horizontal">Distribute H</button>
+                        <button id="distribute-vertical">Distribute V</button>
+                    </div>
+                    <small class="muted">Shortcuts: Ctrl+Shift+←/→/↑/↓ for edges, Ctrl+Shift+C/M for center/middle, Ctrl+Shift+H/V to distribute.</small>
+                </div>
             </div>
         </div>
 

@@ -17,6 +17,7 @@
     --minimap-bg: #ffffff;
     --minimap-border: #ccc;
     --node-label: #0f172a;
+    --guide-color: #2563eb;
 }
 
 body.dark {
@@ -38,6 +39,7 @@ body.dark {
     --minimap-bg: #0f172a;
     --minimap-border: #1f2937;
     --node-label: #ffffff;
+    --guide-color: #60a5fa;
 }
 
 html, body {
@@ -268,6 +270,17 @@ body.dark .subsection {
     flex: 1;
 }
 
+.arrange-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.arrange-grid.arrange-grid-two {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .property-card {
     border: 1px solid var(--section-border);
     border-radius: 10px;
@@ -440,6 +453,14 @@ small {
 
 .node-label {
     fill: var(--node-label);
+}
+
+.snap-guide {
+    stroke: var(--guide-color);
+    stroke-width: 1;
+    stroke-dasharray: 6 4;
+    opacity: 0.85;
+    pointer-events: none;
 }
 
 .badge {

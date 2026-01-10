@@ -1027,7 +1027,7 @@ document.querySelectorAll(".panel .panel-toggle").forEach(toggle => {
 });
 
 // mode buttons
-document.querySelectorAll("#sidebar button[data-mode]").forEach(btn => {
+document.querySelectorAll("#mode-toolbar button[data-mode]").forEach(btn => {
     btn.addEventListener("click", () => {
         currentMode = btn.dataset.mode;
         updateModeButtons();
@@ -1035,11 +1035,33 @@ document.querySelectorAll("#sidebar button[data-mode]").forEach(btn => {
 });
 
 function updateModeButtons() {
-    document.querySelectorAll("#sidebar button[data-mode]").forEach(btn => {
+    document.querySelectorAll("#mode-toolbar button[data-mode]").forEach(btn => {
         btn.classList.toggle("active", btn.dataset.mode === currentMode);
     });
 }
 updateModeButtons();
+
+// top tabs
+const tabButtons = document.querySelectorAll(".tab-button");
+const tabPanels = document.querySelectorAll(".tab-panel");
+tabButtons.forEach(btn => {
+    btn.addEventListener("click", () => {
+        const tab = btn.dataset.tab;
+        tabButtons.forEach(other => other.classList.toggle("active", other === btn));
+        tabPanels.forEach(panel => panel.classList.toggle("active", panel.dataset.tab === tab));
+    });
+});
+
+// mini-map toggle
+const minimapToggle = document.getElementById("toggle-minimap");
+const minimapContainer = document.getElementById("minimap-container");
+if (minimapToggle && minimapContainer) {
+    const syncMinimapVisibility = () => {
+        minimapContainer.classList.toggle("hidden", !minimapToggle.checked);
+    };
+    minimapToggle.addEventListener("change", syncMinimapVisibility);
+    syncMinimapVisibility();
+}
 
 const paletteItems = document.querySelectorAll(".shape-item");
 paletteItems.forEach(item => {

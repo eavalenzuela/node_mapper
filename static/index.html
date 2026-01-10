@@ -7,22 +7,252 @@
 </head>
 <body>
 
-<div id="layout">
-    <div id="sidebar">
-        <div class="sidebar-header">
-            <h2>Node Mapper</h2>
+<div id="app">
+    <div id="top-bar">
+        <div class="top-left">
+            <div class="brand">Node Mapper</div>
+            <div class="mode-toolbar" id="mode-toolbar">
+                <button id="mode-select" data-mode="select">Select / Drag</button>
+                <button id="mode-node" data-mode="node">New Node</button>
+                <button id="mode-link" data-mode="link">New Link</button>
+                <button id="mode-delete" data-mode="delete">Delete</button>
+                <button id="mode-box" data-mode="box">New Box</button>
+            </div>
+        </div>
+        <div class="top-right">
+            <div class="button-row two top-actions">
+                <button id="undo-btn">Undo</button>
+                <button id="redo-btn">Redo</button>
+            </div>
             <div class="theme-pill" id="theme-toggle" role="switch" aria-checked="false" aria-label="Toggle dark mode">
                 <span class="pill-option">Light</span>
                 <span class="pill-option">Dark</span>
                 <span class="pill-handle"></span>
             </div>
         </div>
+    </div>
 
-        <div class="button-row two sidebar-actions">
-            <button id="undo-btn">Undo</button>
-            <button id="redo-btn">Redo</button>
+    <div id="tab-bar">
+        <button class="tab-button active" data-tab="file" type="button">File</button>
+        <button class="tab-button" data-tab="analytics" type="button">Analytics</button>
+        <button class="tab-button" data-tab="arrange" type="button">Arrange</button>
+        <button class="tab-button" data-tab="view" type="button">View</button>
+    </div>
+
+    <div id="tab-panels">
+        <div class="tab-panel active" data-tab="file">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Import / Export</h4>
+                    <small>Bring in data or save a snapshot.</small>
+                </div>
+
+                <label for="import-format">Import format</label>
+                <select id="import-format">
+                    <option value="json">Graph JSON (.json)</option>
+                    <option value="csv">CSV edge list (.csv)</option>
+                    <option value="graphml">GraphML (.graphml/.xml)</option>
+                </select>
+
+                <label class="input-label" for="load-file">Choose file</label>
+                <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,text/csv">
+
+                <div class="io-row">
+                    <div class="io-col">
+                        <label for="export-format">Export as</label>
+                        <select id="export-format">
+                            <option value="json">Graph JSON</option>
+                            <option value="svg">SVG</option>
+                            <option value="png">PNG</option>
+                        </select>
+                    </div>
+                    <div class="io-col">
+                        <button id="export-graph">Download export</button>
+                    </div>
+                </div>
+
+                <button id="load-autosave">Load Autosave</button>
+                <small id="autosave-info"></small>
+            </div>
         </div>
 
+        <div class="tab-panel" data-tab="analytics">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Analytics <span id="analytics-backend-badge" class="badge badge-gray">In-browser</span></h4>
+                    <small>Summaries and path finding.</small>
+                </div>
+                <button id="compute-stats">Compute stats</button>
+                <div id="analytics-stats"></div>
+
+                <h4>Find path A → B</h4>
+                <label>Start node ID</label>
+                <input id="path-start" type="text" placeholder="e.g., n0">
+
+                <label>Target node ID</label>
+                <input id="path-end" type="text" placeholder="e.g., n3">
+
+                <label>Algorithm</label>
+                <select id="path-algorithm">
+                    <option value="auto">Auto (prefer weighted)</option>
+                    <option value="dijkstra">Dijkstra (weighted)</option>
+                    <option value="bfs">BFS (unweighted)</option>
+                </select>
+
+                <div class="button-row two" style="margin-top: 6px;">
+                    <button id="find-path-btn">Find path</button>
+                    <button id="clear-path-btn">Clear path</button>
+                </div>
+
+                <div id="analytics-path-result" style="margin-top: 8px;"></div>
+            </div>
+        </div>
+
+        <div class="tab-panel" data-tab="arrange">
+            <div class="layout-row">
+                <div class="layout-select">
+                    <label>Layout</label>
+                    <select id="layout-select">
+                        <option value="manual">Manual</option>
+                        <option value="force">Force Layout</option>
+                        <option value="grid">Grid Layout</option>
+                        <option value="circle">Circular Layout</option>
+                        <option value="hierarchical">Hierarchical Layout</option>
+                        <option value="weightedTree">Weighted Tree</option>
+                    </select>
+                </div>
+                <button id="apply-layout">Apply Layout</button>
+            </div>
+            <small id="layout-active-label" class="muted">Layout controls change based on the selection above.</small>
+
+            <div class="layout-settings" data-layout="force">
+                <div class="layout-settings-header">Force options</div>
+                <label>Repulsion</label>
+                <input id="force-repulsion" type="number" min="0" step="1000">
+
+                <label>Ideal edge length</label>
+                <input id="force-ideal" type="number" min="10" step="10">
+
+                <label>Iterations</label>
+                <input id="force-iterations" type="number" min="10" step="10">
+            </div>
+
+            <div class="layout-settings" data-layout="grid">
+                <div class="layout-settings-header">Grid spacing</div>
+                <label>Box horizontal spacing</label>
+                <input id="grid-box-hmargin" type="number" min="50" step="10">
+
+                <label>Box vertical spacing</label>
+                <input id="grid-box-vmargin" type="number" min="50" step="10">
+
+                <label>Node horizontal spacing</label>
+                <input id="grid-node-hmargin" type="number" min="20" step="10">
+
+                <label>Node vertical spacing</label>
+                <input id="grid-node-vmargin" type="number" min="20" step="10">
+            </div>
+
+            <div class="layout-settings" data-layout="circle">
+                <div class="layout-settings-header">Circle layout</div>
+                <label>Outer radius</label>
+                <input id="circle-outer-radius" type="number" min="50" step="10">
+
+                <label>Inner radius</label>
+                <input id="circle-inner-radius" type="number" min="30" step="10">
+            </div>
+
+            <div class="layout-settings" data-layout="hierarchical">
+                <div class="layout-settings-header">Hierarchical layout</div>
+                <label>Node horizontal spacing</label>
+                <input id="hier-node-hmargin" type="number" min="20" step="10">
+
+                <label>Node vertical spacing</label>
+                <input id="hier-node-vmargin" type="number" min="20" step="10">
+            </div>
+
+            <div class="layout-settings" data-layout="weightedTree">
+                <div class="layout-settings-header">Weighted tree layout</div>
+                <label>Tier count</label>
+                <input id="weighted-tiers" type="number" min="1" step="1">
+
+                <label>Tier spacing</label>
+                <input id="weighted-tier-spacing" type="number" min="20" step="10">
+
+                <label>Node spacing</label>
+                <input id="weighted-node-spacing" type="number" min="20" step="10">
+            </div>
+
+            <div class="layout-settings" data-layout="edges">
+                <div class="layout-settings-header">Edges</div>
+                <label>Routing style</label>
+                <select id="edge-routing">
+                    <option value="straight">Straight lines</option>
+                    <option value="orthogonal">Orthogonal elbows</option>
+                </select>
+                <small>Use orthogonal routing to reduce crossings and clutter.</small>
+            </div>
+
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Snapping & Guides</h4>
+                    <small>Snap dragged items to the grid or nearby edges.</small>
+                </div>
+                <label class="checkbox-inline">
+                    <input id="snap-grid-toggle" type="checkbox">
+                    Snap to grid
+                </label>
+                <label>Grid size</label>
+                <input id="snap-grid-size" type="number" min="5" step="5">
+                <label class="checkbox-inline">
+                    <input id="snap-object-toggle" type="checkbox">
+                    Snap to object edges
+                </label>
+                <label class="checkbox-inline">
+                    <input id="guide-toggle" type="checkbox">
+                    Show guide lines while dragging
+                </label>
+            </div>
+
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Align & Distribute</h4>
+                    <small>Applies to nodes in the selected box or all visible nodes.</small>
+                </div>
+                <div class="arrange-grid">
+                    <button id="align-left">Align Left</button>
+                    <button id="align-center">Align Center</button>
+                    <button id="align-right">Align Right</button>
+                </div>
+                <div class="arrange-grid">
+                    <button id="align-top">Align Top</button>
+                    <button id="align-middle">Align Middle</button>
+                    <button id="align-bottom">Align Bottom</button>
+                </div>
+                <div class="arrange-grid arrange-grid-two">
+                    <button id="distribute-horizontal">Distribute H</button>
+                    <button id="distribute-vertical">Distribute V</button>
+                </div>
+                <small class="muted">Shortcuts: Ctrl+Shift+←/→/↑/↓ for edges, Ctrl+Shift+C/M for center/middle, Ctrl+Shift+H/V to distribute.</small>
+            </div>
+        </div>
+
+        <div class="tab-panel" data-tab="view">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Mini-map</h4>
+                    <small>Toggle the canvas overview.</small>
+                </div>
+                <label class="checkbox-inline">
+                    <input id="toggle-minimap" type="checkbox" checked>
+                    Show mini-map overlay
+                </label>
+                <small>Mini-map appears in the top-right corner of the canvas.</small>
+            </div>
+        </div>
+    </div>
+
+    <div id="layout">
+        <div id="sidebar">
         <div class="panel open" id="panel-workspace">
             <button class="panel-toggle" type="button">
                 <div class="panel-titles">
@@ -32,20 +262,6 @@
                 <span class="chevron" aria-hidden="true"></span>
             </button>
             <div class="panel-content">
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Modes</h4>
-                        <small>Choose how clicks behave on the canvas.</small>
-                    </div>
-                    <div class="mode-grid">
-                        <button id="mode-select" data-mode="select">Select / Drag</button>
-                        <button id="mode-node" data-mode="node">New Node</button>
-                        <button id="mode-link" data-mode="link">New Link</button>
-                        <button id="mode-delete" data-mode="delete">Delete</button>
-                        <button id="mode-box" data-mode="box">New Box</button>
-                    </div>
-                </div>
-
                 <div class="subsection">
                     <div class="subsection-header">
                         <h4>Shape Palette</h4>
@@ -204,245 +420,16 @@
             </div>
         </div>
 
-        <div class="panel open" id="panel-layout">
-            <button class="panel-toggle" type="button">
-                <div class="panel-titles">
-                    <div class="eyebrow">Arrange</div>
-                    <div class="title">Layout & Routing</div>
-                </div>
-                <span class="chevron" aria-hidden="true"></span>
-            </button>
-            <div class="panel-content">
-                <div class="layout-row">
-                    <div class="layout-select">
-                        <label>Layout</label>
-                        <select id="layout-select">
-                            <option value="manual">Manual</option>
-                            <option value="force">Force Layout</option>
-                            <option value="grid">Grid Layout</option>
-                            <option value="circle">Circular Layout</option>
-                            <option value="hierarchical">Hierarchical Layout</option>
-                            <option value="weightedTree">Weighted Tree</option>
-                        </select>
-                    </div>
-                    <button id="apply-layout">Apply Layout</button>
-                </div>
-                <small id="layout-active-label" class="muted">Layout controls change based on the selection above.</small>
-
-                <div class="layout-settings" data-layout="force">
-                    <div class="layout-settings-header">Force options</div>
-                    <label>Repulsion</label>
-                    <input id="force-repulsion" type="number" min="0" step="1000">
-
-                    <label>Ideal edge length</label>
-                    <input id="force-ideal" type="number" min="10" step="10">
-
-                    <label>Iterations</label>
-                    <input id="force-iterations" type="number" min="10" step="10">
-                </div>
-
-                <div class="layout-settings" data-layout="grid">
-                    <div class="layout-settings-header">Grid spacing</div>
-                    <label>Box horizontal spacing</label>
-                    <input id="grid-box-hmargin" type="number" min="50" step="10">
-
-                    <label>Box vertical spacing</label>
-                    <input id="grid-box-vmargin" type="number" min="50" step="10">
-
-                    <label>Node horizontal spacing</label>
-                    <input id="grid-node-hmargin" type="number" min="20" step="10">
-
-                    <label>Node vertical spacing</label>
-                    <input id="grid-node-vmargin" type="number" min="20" step="10">
-                </div>
-
-                <div class="layout-settings" data-layout="circle">
-                    <div class="layout-settings-header">Circle layout</div>
-                    <label>Outer radius</label>
-                    <input id="circle-outer-radius" type="number" min="50" step="10">
-
-                    <label>Inner radius</label>
-                    <input id="circle-inner-radius" type="number" min="30" step="10">
-                </div>
-
-                <div class="layout-settings" data-layout="hierarchical">
-                    <div class="layout-settings-header">Hierarchical layout</div>
-                    <label>Node horizontal spacing</label>
-                    <input id="hier-node-hmargin" type="number" min="20" step="10">
-
-                    <label>Node vertical spacing</label>
-                    <input id="hier-node-vmargin" type="number" min="20" step="10">
-                </div>
-
-                <div class="layout-settings" data-layout="weightedTree">
-                    <div class="layout-settings-header">Weighted tree layout</div>
-                    <label>Tier count</label>
-                    <input id="weighted-tiers" type="number" min="1" step="1">
-
-                    <label>Tier spacing</label>
-                    <input id="weighted-tier-spacing" type="number" min="20" step="10">
-
-                    <label>Node spacing</label>
-                    <input id="weighted-node-spacing" type="number" min="20" step="10">
-                </div>
-
-                <div class="layout-settings" data-layout="edges">
-                    <div class="layout-settings-header">Edges</div>
-                    <label>Routing style</label>
-                    <select id="edge-routing">
-                        <option value="straight">Straight lines</option>
-                        <option value="orthogonal">Orthogonal elbows</option>
-                    </select>
-                    <small>Use orthogonal routing to reduce crossings and clutter.</small>
-                </div>
-
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Snapping & Guides</h4>
-                        <small>Snap dragged items to the grid or nearby edges.</small>
-                    </div>
-                    <label class="checkbox-inline">
-                        <input id="snap-grid-toggle" type="checkbox">
-                        Snap to grid
-                    </label>
-                    <label>Grid size</label>
-                    <input id="snap-grid-size" type="number" min="5" step="5">
-                    <label class="checkbox-inline">
-                        <input id="snap-object-toggle" type="checkbox">
-                        Snap to object edges
-                    </label>
-                    <label class="checkbox-inline">
-                        <input id="guide-toggle" type="checkbox">
-                        Show guide lines while dragging
-                    </label>
-                </div>
-
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Align & Distribute</h4>
-                        <small>Applies to nodes in the selected box or all visible nodes.</small>
-                    </div>
-                    <div class="arrange-grid">
-                        <button id="align-left">Align Left</button>
-                        <button id="align-center">Align Center</button>
-                        <button id="align-right">Align Right</button>
-                    </div>
-                    <div class="arrange-grid">
-                        <button id="align-top">Align Top</button>
-                        <button id="align-middle">Align Middle</button>
-                        <button id="align-bottom">Align Bottom</button>
-                    </div>
-                    <div class="arrange-grid arrange-grid-two">
-                        <button id="distribute-horizontal">Distribute H</button>
-                        <button id="distribute-vertical">Distribute V</button>
-                    </div>
-                    <small class="muted">Shortcuts: Ctrl+Shift+←/→/↑/↓ for edges, Ctrl+Shift+C/M for center/middle, Ctrl+Shift+H/V to distribute.</small>
-                </div>
-            </div>
         </div>
 
-        <div class="panel open" id="panel-analysis">
-            <button class="panel-toggle" type="button">
-                <div class="panel-titles">
-                    <div class="eyebrow">Insights</div>
-                    <div class="title">Analytics</div>
-                </div>
-                <span class="chevron" aria-hidden="true"></span>
-            </button>
-            <div class="panel-content">
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Analytics <span id="analytics-backend-badge" class="badge badge-gray">In-browser</span></h4>
-                        <small>Summaries and path finding.</small>
-                    </div>
-                    <button id="compute-stats">Compute stats</button>
-                    <div id="analytics-stats"></div>
-
-                    <h4>Find path A → B</h4>
-                    <label>Start node ID</label>
-                    <input id="path-start" type="text" placeholder="e.g., n0">
-
-                    <label>Target node ID</label>
-                    <input id="path-end" type="text" placeholder="e.g., n3">
-
-                    <label>Algorithm</label>
-                    <select id="path-algorithm">
-                        <option value="auto">Auto (prefer weighted)</option>
-                        <option value="dijkstra">Dijkstra (weighted)</option>
-                        <option value="bfs">BFS (unweighted)</option>
-                    </select>
-
-                    <div class="button-row two" style="margin-top: 6px;">
-                        <button id="find-path-btn">Find path</button>
-                        <button id="clear-path-btn">Clear path</button>
-                    </div>
-
-                    <div id="analytics-path-result" style="margin-top: 8px;"></div>
-                </div>
-
-            </div>
-        </div>
-
-        <div class="panel open" id="panel-io">
-            <button class="panel-toggle" type="button">
-                <div class="panel-titles">
-                    <div class="eyebrow">Data</div>
-                    <div class="title">I/O</div>
-                </div>
-                <span class="chevron" aria-hidden="true"></span>
-            </button>
-            <div class="panel-content">
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Import / Export</h4>
-                        <small>Bring in data or save a snapshot.</small>
-                    </div>
-
-                    <label for="import-format">Import format</label>
-                    <select id="import-format">
-                        <option value="json">Graph JSON (.json)</option>
-                        <option value="csv">CSV edge list (.csv)</option>
-                        <option value="graphml">GraphML (.graphml/.xml)</option>
-                    </select>
-
-                    <label class="input-label" for="load-file">Choose file</label>
-                    <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,text/csv">
-
-                    <div class="io-row">
-                        <div class="io-col">
-                            <label for="export-format">Export as</label>
-                            <select id="export-format">
-                                <option value="json">Graph JSON</option>
-                                <option value="svg">SVG</option>
-                                <option value="png">PNG</option>
-                            </select>
-                        </div>
-                        <div class="io-col">
-                            <button id="export-graph">Download export</button>
-                        </div>
-                    </div>
-
-                    <button id="load-autosave">Load Autosave</button>
-                    <small id="autosave-info"></small>
-                </div>
-            </div>
-        </div>
-
-        <div class="panel open" id="panel-minimap">
-            <button class="panel-toggle" type="button">
-                <div class="panel-titles">
-                    <div class="eyebrow">Overview</div>
-                    <div class="title">Mini-map</div>
-                </div>
-                <span class="chevron" aria-hidden="true"></span>
-            </button>
-            <div class="panel-content">
+        <div id="canvas-wrap">
+            <svg id="graphCanvas"></svg>
+            <div id="minimap-container" class="minimap-floating">
+                <div class="minimap-header">Mini-map</div>
                 <svg id="minimap" width="180" height="120"></svg>
             </div>
         </div>
     </div>
-
-    <svg id="graphCanvas"></svg>
 </div>
 
 <script src="static/app.js"></script>

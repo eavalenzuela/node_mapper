@@ -57,10 +57,23 @@ html, body {
     background: var(--sidebar-bg);
 }
 
+#app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    width: 100vw;
+}
+
 #layout {
     display: flex;
-    width: 100vw;
-    height: 100vh;
+    flex: 1;
+    min-height: 0;
+}
+
+#canvas-wrap {
+    flex: 1;
+    position: relative;
+    min-width: 0;
 }
 
 /* Sidebar */
@@ -76,20 +89,84 @@ html, body {
     color: var(--sidebar-text);
 }
 
-.sidebar-header {
+/* Top bar + tabs */
+
+#top-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 10px;
+    gap: 16px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--sidebar-border);
+    background: var(--sidebar-bg);
 }
 
-#sidebar h2 {
+.top-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.top-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.brand {
+    font-size: 18px;
+    font-weight: 700;
+}
+
+.mode-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.top-actions {
     margin: 0;
 }
 
-.sidebar-actions {
-    margin-bottom: 12px;
+#tab-bar {
+    display: flex;
+    gap: 8px;
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--sidebar-border);
+    background: var(--sidebar-bg);
+}
+
+.tab-button {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--button-border);
+    background: var(--button-bg);
+    color: var(--button-text);
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.tab-button.active {
+    background: var(--button-active-bg);
+    color: var(--button-active-text);
+    border-color: var(--button-active-border);
+}
+
+#tab-panels {
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--sidebar-border);
+    background: var(--sidebar-bg);
+    max-height: 35vh;
+    overflow-y: auto;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
 }
 
 .panel {
@@ -245,7 +322,12 @@ body.dark .shape-item {
 #sidebar input[type=\"number\"],
 #sidebar input[type=\"color\"],
 #sidebar textarea,
-#sidebar select {
+#sidebar select,
+#tab-panels input[type=\"text\"],
+#tab-panels input[type=\"number\"],
+#tab-panels input[type=\"color\"],
+#tab-panels textarea,
+#tab-panels select {
     width: 100%;
     margin-bottom: 6px;
     box-sizing: border-box;
@@ -257,7 +339,8 @@ body.dark .shape-item {
     border-radius: 4px;
 }
 
-#sidebar textarea {
+#sidebar textarea,
+#tab-panels textarea {
     resize: vertical;
     min-height: 50px;
 }
@@ -271,10 +354,30 @@ body.dark .shape-item {
     font-size: 12px;
 }
 
-#sidebar label {
+#sidebar label,
+#tab-panels label {
     font-size: 12px;
     display: block;
     margin: 6px 0 2px 0;
+}
+
+.mode-toolbar button,
+.top-actions button,
+#tab-panels button {
+    padding: 7px 8px;
+    cursor: pointer;
+    border: 1px solid var(--button-border);
+    background: var(--button-bg);
+    color: var(--button-text);
+    border-radius: 4px;
+    font-size: 13px;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.mode-toolbar button.active {
+    background: var(--button-active-bg);
+    color: var(--button-active-text);
+    border-color: var(--button-active-border);
 }
 
 .io-row {
@@ -508,9 +611,30 @@ body.dark .empty-state {
     flex: 1;
     background: var(--canvas-bg);
     display: block;
+    width: 100%;
+    height: 100%;
 }
 
 /* Mini-map */
+
+.minimap-floating {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    border-radius: 10px;
+    background: var(--minimap-bg);
+    border: 1px solid var(--minimap-border);
+    padding: 6px;
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.15);
+}
+
+.minimap-header {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+    color: var(--small-text);
+}
 
 #minimap {
     border: 1px solid var(--minimap-border);

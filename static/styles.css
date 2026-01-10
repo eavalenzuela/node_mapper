@@ -281,6 +281,38 @@ body.dark .subsection {
     grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.layer-row {
+    border: 1px solid var(--section-border);
+    border-radius: 8px;
+    padding: 8px;
+    margin-bottom: 8px;
+    background: rgba(255, 255, 255, 0.25);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+body.dark .layer-row {
+    background: rgba(17, 24, 39, 0.6);
+}
+
+.layer-row.active {
+    border-color: var(--button-active-border);
+    box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.3);
+}
+
+.layer-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.layer-actions .layer-action {
+    flex: 1;
+    width: auto;
+    margin-bottom: 0;
+}
+
 .property-card {
     border: 1px solid var(--section-border);
     border-radius: 10px;

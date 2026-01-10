@@ -7,9 +7,12 @@ const THEME_KEY = "graph-theme";
 
 // ---------- STATE ----------
 
-let nodes = {};   // id -> { id, x, y, label, color, size, desc, box }
-let edges = [];   // { id, source, target, label, color, width, directed }
-let boxes = {};   // id -> { id, label, x, y, width, height, nodes: [nodeId...] }
+let nodes = {};   // id -> { id, x, y, label, color, size, desc, box, layer }
+let edges = [];   // { id, source, target, label, color, width, directed, layer }
+let boxes = {};   // id -> { id, label, x, y, width, height, nodes: [nodeId...], layer }
+
+let layers = [];  // { id, name, visible, locked }
+let activeLayerId = null;
 
 let currentMode = "select";  // "select" | "node" | "link" | "delete" | "box"
 
@@ -53,6 +56,7 @@ let currentTheme = "light";
 let nodeCounter = 0;
 let edgeCounter = 0;
 let boxCounter = 0;
+let layerCounter = 0;
 
 const LAYOUT_SETTINGS_KEY = "graph-layout-settings-v1";
 const SNAP_SETTINGS_KEY = "graph-snap-settings-v1";
@@ -199,10 +203,191 @@ function saveSnapSettingsToStorage() {
 
 snapSettings = loadSnapSettingsFromStorage();
 
+// ---------- LAYERS ----------
+
+function normalizeLayers(incoming = []) {
+    const list = Array.isArray(incoming) ? incoming : [];
+    const normalized = list.map((layer, idx) => {
+        const id = layer.id || `l${idx}`;
+        return {
+            id,
+            name: layer.name || `Layer ${idx + 1}`,
+            visible: layer.visible !== false,
+            locked: !!layer.locked
+        };
+    });
+
+    if (!normalized.length) {
+        normalized.push({
+            id: "l0",
+            name: "Layer 1",
+            visible: true,
+            locked: false
+        });
+    }
+
+    const numericIds = normalized
+        .map(layer => parseInt(layer.id.replace(/[^\d]/g, ""), 10))
+        .filter(n => !Number.isNaN(n));
+    const maxId = numericIds.length ? Math.max(...numericIds) : normalized.length - 1;
+    layerCounter = Math.max(layerCounter, maxId + 1);
+    return normalized;
+}
+
+function ensureActiveLayer() {
+    if (!layers.length) {
+        layers = normalizeLayers([]);
+    }
+    if (!activeLayerId || !layers.find(layer => layer.id === activeLayerId)) {
+        activeLayerId = layers[0].id;
+    }
+}
+
+function getLayerById(layerId) {
+    return layers.find(layer => layer.id === layerId);
+}
+
+function isLayerVisible(layerId) {
+    const layer = getLayerById(layerId);
+    return layer ? layer.visible !== false : true;
+}
+
+function isLayerLocked(layerId) {
+    const layer = getLayerById(layerId);
+    return layer ? !!layer.locked : false;
+}
+
+function ensureItemLayers() {
+    ensureActiveLayer();
+    Object.values(nodes).forEach(node => {
+        if (!node.layer) {
+            node.layer = activeLayerId;
+        }
+    });
+    edges.forEach(edge => {
+        if (!edge.layer) {
+            edge.layer = nodes[edge.source]?.layer || nodes[edge.target]?.layer || activeLayerId;
+        }
+    });
+    Object.values(boxes).forEach(box => {
+        if (!box.layer) {
+            box.layer = activeLayerId;
+        }
+    });
+}
+
+function setActiveLayer(layerId) {
+    activeLayerId = layerId;
+    renderLayersPanel();
+}
+
+function addLayer(name = null) {
+    pushUndo();
+    const id = `l${layerCounter++}`;
+    const label = name || `Layer ${layers.length + 1}`;
+    layers.push({ id, name: label, visible: true, locked: false });
+    activeLayerId = id;
+    renderLayersPanel();
+    render();
+}
+
+function clearSelectionIfLayerUnavailable() {
+    if (selectedNodeId && nodes[selectedNodeId] && (isLayerLocked(nodes[selectedNodeId].layer) || !isLayerVisible(nodes[selectedNodeId].layer))) {
+        selectedNodeId = null;
+    }
+    const edge = edges.find(ed => ed.id === selectedEdgeId);
+    if (edge && (isLayerLocked(edge.layer) || !isLayerVisible(edge.layer))) {
+        selectedEdgeId = null;
+    }
+    if (selectedBoxId && boxes[selectedBoxId] && (isLayerLocked(boxes[selectedBoxId].layer) || !isLayerVisible(boxes[selectedBoxId].layer))) {
+        selectedBoxId = null;
+    }
+}
+
+function renderLayersPanel() {
+    const list = document.getElementById("layers-list");
+    if (!list) return;
+    ensureActiveLayer();
+    list.innerHTML = "";
+
+    layers.forEach(layer => {
+        const row = document.createElement("div");
+        row.className = "layer-row";
+        if (layer.id === activeLayerId) {
+            row.classList.add("active");
+        }
+
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.value = layer.name || layer.id;
+        let pushedNameUndo = false;
+        nameInput.addEventListener("input", () => {
+            if (!pushedNameUndo) {
+                pushUndo();
+                pushedNameUndo = true;
+            }
+            layer.name = nameInput.value;
+        });
+        nameInput.addEventListener("blur", () => {
+            renderLayersPanel();
+        });
+
+        const actions = document.createElement("div");
+        actions.className = "layer-actions";
+
+        const activeBtn = document.createElement("button");
+        activeBtn.type = "button";
+        activeBtn.className = "layer-action";
+        activeBtn.textContent = layer.id === activeLayerId ? "Active" : "Set Active";
+        activeBtn.disabled = layer.id === activeLayerId;
+        activeBtn.addEventListener("click", () => {
+            setActiveLayer(layer.id);
+        });
+
+        const visibilityBtn = document.createElement("button");
+        visibilityBtn.type = "button";
+        visibilityBtn.className = "layer-action";
+        visibilityBtn.textContent = layer.visible !== false ? "Hide" : "Show";
+        visibilityBtn.addEventListener("click", () => {
+            pushUndo();
+            layer.visible = !layer.visible;
+            clearSelectionIfLayerUnavailable();
+            renderLayersPanel();
+            render();
+        });
+
+        const lockBtn = document.createElement("button");
+        lockBtn.type = "button";
+        lockBtn.className = "layer-action";
+        lockBtn.textContent = layer.locked ? "Unlock" : "Lock";
+        lockBtn.addEventListener("click", () => {
+            pushUndo();
+            layer.locked = !layer.locked;
+            if (layer.locked && activeLayerId === layer.id) {
+                const firstUnlocked = layers.find(item => !item.locked);
+                if (firstUnlocked) {
+                    activeLayerId = firstUnlocked.id;
+                }
+            }
+            clearSelectionIfLayerUnavailable();
+            renderLayersPanel();
+            render();
+        });
+
+        actions.appendChild(activeBtn);
+        actions.appendChild(visibilityBtn);
+        actions.appendChild(lockBtn);
+
+        row.appendChild(nameInput);
+        row.appendChild(actions);
+        list.appendChild(row);
+    });
+}
+
 // ---------- UTILITIES ----------
 
 function snapshot() {
-    return JSON.stringify({ nodes, edges, boxes, layoutSettings });
+    return JSON.stringify({ nodes, edges, boxes, layers, activeLayerId, layoutSettings });
 }
 
 function restoreFromSnapshot(json) {
@@ -210,10 +395,13 @@ function restoreFromSnapshot(json) {
     nodes = data.nodes || {};
     edges = data.edges || [];
     boxes = data.boxes || {};
+    layers = normalizeLayers(data.layers || []);
+    activeLayerId = data.activeLayerId || (layers[0] ? layers[0].id : null);
     layoutSettings = normalizeLayoutSettings(data.layoutSettings);
     nodeCounter = Object.keys(nodes).length;
     edgeCounter = edges.length;
     boxCounter = Object.keys(boxes).length;
+    ensureItemLayers();
     syncLayoutControlsFromSettings();
     saveLayoutSettingsToStorage();
 }
@@ -232,10 +420,14 @@ function applyGraphPayload(graph = {}) {
         label: ed.label || "",
         color: ed.color || "#888888",
         width: ed.width || 2,
-        directed: !!ed.directed
+        directed: !!ed.directed,
+        layer: ed.layer
     }));
 
     boxes = graph.boxes || {};
+    layers = normalizeLayers(graph.layers || []);
+    activeLayerId = graph.activeLayerId || (layers[0] ? layers[0].id : null);
+    ensureItemLayers();
 
     const incomingLayout = graph.layoutSettings || graph.layout;
     if (incomingLayout) {
@@ -270,6 +462,7 @@ function resetPathHighlights() {
 }
 
 function isNodeVisible(node) {
+    if (!isLayerVisible(node.layer)) return false;
     if (!searchTerm) return true;
     const text = ((node.label || "") + " " + (node.desc || "") + " " + (node.group || "")).toLowerCase();
     return text.includes(searchTerm);
@@ -285,6 +478,7 @@ function getSnapCandidates({ excludeNodeId = null, excludeBoxId = null } = {}) {
 
     Object.values(nodes).forEach(n => {
         if (n.id === excludeNodeId) return;
+        if (!isLayerVisible(n.layer)) return;
         const r = n.size || 25;
         x.push(n.x - r, n.x + r);
         y.push(n.y - r, n.y + r);
@@ -292,6 +486,7 @@ function getSnapCandidates({ excludeNodeId = null, excludeBoxId = null } = {}) {
 
     Object.values(boxes).forEach(b => {
         if (b.id === excludeBoxId) return;
+        if (!isLayerVisible(b.layer)) return;
         x.push(b.x, b.x + b.width);
         y.push(b.y, b.y + b.height);
     });
@@ -665,7 +860,7 @@ function updateAutosaveInfo() {
 function autosave() {
     const payload = {
         timestamp: Date.now(),
-        graph: { nodes, edges, boxes },
+        graph: { nodes, edges, boxes, layers, activeLayerId },
         layoutSettings
     };
     localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
@@ -720,6 +915,8 @@ async function loadGraphFromBackend() {
         nodes = {};
         edges = [];
         boxes = {};
+        layers = normalizeLayers([]);
+        activeLayerId = layers[0].id;
         nodeCounter = 0;
         edgeCounter = 0;
         boxCounter = 0;
@@ -789,7 +986,21 @@ document.getElementById("search-input").addEventListener("input", e => {
     render();
 });
 
+const addLayerBtn = document.getElementById("add-layer");
+if (addLayerBtn) {
+    addLayerBtn.addEventListener("click", () => {
+        addLayer();
+    });
+}
+
 // node editor
+function setEditorDisabled(editor, disabled) {
+    if (!editor) return;
+    editor.querySelectorAll("input, textarea, select, button").forEach(el => {
+        el.disabled = disabled;
+    });
+}
+
 function updateNodeEditor() {
     const editor = document.getElementById("node-editor");
     const empty = document.getElementById("node-empty-state");
@@ -806,7 +1017,10 @@ function updateNodeEditor() {
         empty.classList.toggle("hidden", !disabled);
     }
 
-    if (disabled) return;
+    if (disabled) {
+        setEditorDisabled(editor, true);
+        return;
+    }
 
     const n = nodes[selectedNodeId];
     document.getElementById("edit-label").value = n.label || "";
@@ -814,10 +1028,18 @@ function updateNodeEditor() {
     document.getElementById("edit-size").value = n.size || 25;
     document.getElementById("edit-group").value = n.group || "";
     document.getElementById("edit-desc").value = n.desc || "";
+
+    const locked = isLayerLocked(n.layer);
+    setEditorDisabled(editor, locked);
+    if (chip && locked) {
+        chip.textContent += " (Locked)";
+    }
+    if (locked) return;
 }
 
 document.getElementById("apply-node-edit").addEventListener("click", () => {
     if (!selectedNodeId || !nodes[selectedNodeId]) return;
+    if (isLayerLocked(nodes[selectedNodeId].layer)) return;
     pushUndo();
 
     const n = nodes[selectedNodeId];
@@ -848,17 +1070,28 @@ function updateEdgeEditor() {
         empty.classList.toggle("hidden", !disabled);
     }
 
-    if (disabled) return;
+    if (disabled) {
+        setEditorDisabled(editor, true);
+        return;
+    }
 
     document.getElementById("edge-label").value = e.label || "";
     document.getElementById("edge-color").value = e.color || "#888888";
     document.getElementById("edge-width").value = e.width || 2;
     document.getElementById("edge-directed").checked = !!e.directed;
+
+    const locked = isLayerLocked(e.layer);
+    setEditorDisabled(editor, locked);
+    if (chip && locked) {
+        chip.textContent += " (Locked)";
+    }
+    if (locked) return;
 }
 
 document.getElementById("apply-edge-edit").addEventListener("click", () => {
     const e = edges.find(ed => ed.id === selectedEdgeId);
     if (!e) return;
+    if (isLayerLocked(e.layer)) return;
     pushUndo();
 
     e.label = document.getElementById("edge-label").value;
@@ -1106,7 +1339,7 @@ document.getElementById("load-file").addEventListener("change", e => {
 
 document.getElementById("export-graph").addEventListener("click", async () => {
     const format = document.getElementById("export-format").value;
-    const graph = { nodes, edges, boxes, layoutSettings };
+    const graph = { nodes, edges, boxes, layers, activeLayerId, layoutSettings };
     if (format === "json") {
         const blob = new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" });
         downloadBlob(blob, "graph.json");
@@ -1149,6 +1382,7 @@ document.getElementById("load-autosave").addEventListener("click", () => {
 // box editor
 document.getElementById("apply-box-edit").addEventListener("click", () => {
     if (!selectedBoxId) return;
+    if (boxes[selectedBoxId] && isLayerLocked(boxes[selectedBoxId].layer)) return;
     pushUndo();
     const b = boxes[selectedBoxId];
     b.label = document.getElementById("edit-box-label").value;
@@ -1221,6 +1455,7 @@ svg.addEventListener("pointerdown", e => {
     }
 
     if (resizeId && corner && currentMode === "select") {
+        if (boxes[resizeId] && isLayerLocked(boxes[resizeId].layer)) return;
         // start resizing
         resizingBoxId = resizeId;
         resizeCorner = corner;
@@ -1230,6 +1465,7 @@ svg.addEventListener("pointerdown", e => {
 
     if (boxId && currentMode === "select") {
         const b = boxes[boxId];
+        if (b && isLayerLocked(b.layer)) return;
         const pos = screenToWorld(e.clientX, e.clientY);
         dragBoxOffset.x = pos.x - b.x;
         dragBoxOffset.y = pos.y - b.y;
@@ -1246,6 +1482,7 @@ svg.addEventListener("pointerdown", e => {
     // NODE interactions
     if (nodeId) {
         const n = nodes[nodeId];
+        if (n && isLayerLocked(n.layer)) return;
 
         if (currentMode === "delete") {
             pushUndo();
@@ -1287,6 +1524,8 @@ svg.addEventListener("pointerdown", e => {
 
     // EDGE interactions
     if (edgeId) {
+        const edge = edges.find(ed => ed.id === edgeId);
+        if (edge && isLayerLocked(edge.layer)) return;
         if (currentMode === "delete") {
             pushUndo();
             edges = edges.filter(ed => ed.id !== edgeId);
@@ -1311,6 +1550,10 @@ svg.addEventListener("pointerdown", e => {
         const pos = screenToWorld(e.clientX, e.clientY);
 
         if (currentMode === "node") {
+            if (isLayerLocked(activeLayerId)) {
+                alert("Active layer is locked. Unlock it to add nodes.");
+                return;
+            }
             pushUndo();
             createNodeAt(pos.x, pos.y);
             render();
@@ -1318,6 +1561,10 @@ svg.addEventListener("pointerdown", e => {
         }
 
         if (currentMode === "box") {
+            if (isLayerLocked(activeLayerId)) {
+                alert("Active layer is locked. Unlock it to add boxes.");
+                return;
+            }
             pushUndo();
             createBoxAt(pos.x, pos.y);
             render();
@@ -1465,6 +1712,7 @@ svg.addEventListener("pointerup", e => {
 // ---------- CREATION / DELETION HELPERS ----------
 
 function createNodeAt(x, y) {
+    ensureActiveLayer();
     const id = "n" + (nodeCounter++);
     nodes[id] = {
         id,
@@ -1475,7 +1723,8 @@ function createNodeAt(x, y) {
         size: 25,
         desc: "",
         group: "",
-        box: null
+        box: null,
+        layer: activeLayerId
     };
     return id;
 }
@@ -1490,6 +1739,7 @@ function deleteNode(id) {
 }
 
 function createEdge(a, b) {
+    ensureActiveLayer();
     const id = "e" + (edgeCounter++);
     edges.push({
         id,
@@ -1498,12 +1748,14 @@ function createEdge(a, b) {
         label: "",
         color: "#888888",
         width: 2,
-        directed: false
+        directed: false,
+        layer: nodes[a]?.layer || activeLayerId
     });
     return id;
 }
 
 function createBoxAt(x, y) {
+    ensureActiveLayer();
     const id = "b" + (boxCounter++);
     boxes[id] = {
         id,
@@ -1512,7 +1764,8 @@ function createBoxAt(x, y) {
         y,
         width: 260,
         height: 200,
-        nodes: []
+        nodes: [],
+        layer: activeLayerId
     };
     return id;
 }
@@ -1578,10 +1831,19 @@ function updateBoxEditor() {
         empty.classList.toggle("hidden", !disabled);
     }
 
-    if (disabled) return;
+    if (disabled) {
+        setEditorDisabled(editor, true);
+        return;
+    }
 
     const b = boxes[selectedBoxId];
     document.getElementById("edit-box-label").value = b.label;
+    const locked = isLayerLocked(b.layer);
+    setEditorDisabled(editor, locked);
+    if (chip && locked) {
+        chip.textContent += " (Locked)";
+    }
+    if (locked) return;
 }
 
 function getArrangeTargets() {
@@ -1589,13 +1851,13 @@ function getArrangeTargets() {
     if (selectedBoxId && boxes[selectedBoxId]) {
         boxes[selectedBoxId].nodes.forEach(id => {
             const node = nodes[id];
-            if (node && isNodeVisible(node)) candidates.push(node);
+            if (node && isNodeVisible(node) && !isLayerLocked(node.layer)) candidates.push(node);
         });
         if (candidates.length) return candidates;
     }
 
     Object.values(nodes).forEach(node => {
-        if (isNodeVisible(node)) candidates.push(node);
+        if (isNodeVisible(node) && !isLayerLocked(node.layer)) candidates.push(node);
     });
     return candidates;
 }
@@ -1970,6 +2232,7 @@ function getEdgeLabelAnchor(points) {
 }
 
 function render() {
+    clearSelectionIfLayerUnavailable();
     svg.innerHTML = "";
 
     const viewport = document.createElementNS(NS, "g");
@@ -1997,6 +2260,7 @@ function render() {
 
     // draw boxes first
     Object.values(boxes).forEach(b => {
+        if (!isLayerVisible(b.layer)) return;
         const g = document.createElementNS(NS, "g");
         g.dataset.boxId = b.id;
 
@@ -2049,6 +2313,7 @@ function render() {
 
     // edges
     edges.forEach(edge => {
+        if (!isLayerVisible(edge.layer)) return;
         const src = nodes[edge.source];
         const tgt = nodes[edge.target];
         if (!src || !tgt) return;
@@ -2173,6 +2438,7 @@ function render() {
     updateNodeEditor();
     updateEdgeEditor();
     updateBoxEditor();
+    renderLayersPanel();
     renderMinimap();
     autosave();
 }
@@ -2199,9 +2465,11 @@ function renderMinimap() {
     let points = [];
 
     Object.values(nodes).forEach(n => {
+        if (!isNodeVisible(n)) return;
         points.push({ x: n.x, y: n.y });
     });
     Object.values(boxes).forEach(b => {
+        if (!isLayerVisible(b.layer)) return;
         points.push({ x: b.x, y: b.y });
         points.push({ x: b.x + b.width, y: b.y + b.height });
     });
@@ -2233,9 +2501,11 @@ function renderMinimap() {
 
     // edges
     edges.forEach(edge => {
+        if (!isLayerVisible(edge.layer)) return;
         const a = nodes[edge.source];
         const b = nodes[edge.target];
         if (!a || !b) return;
+        if (!isNodeVisible(a) || !isNodeVisible(b)) return;
         const p1 = worldToMini(a.x, a.y);
         const p2 = worldToMini(b.x, b.y);
         const line = document.createElementNS(NS, "line");
@@ -2250,6 +2520,7 @@ function renderMinimap() {
 
     // boxes
     Object.values(boxes).forEach(b => {
+        if (!isLayerVisible(b.layer)) return;
         const tl = worldToMini(b.x, b.y);
         const br = worldToMini(b.x + b.width, b.y + b.height);
         const rect = document.createElementNS(NS, "rect");
@@ -2265,6 +2536,7 @@ function renderMinimap() {
 
     // nodes
     Object.values(nodes).forEach(n => {
+        if (!isNodeVisible(n)) return;
         const p = worldToMini(n.x, n.y);
         const c = document.createElementNS(NS, "circle");
         c.setAttribute("cx", p.x);
@@ -2300,8 +2572,12 @@ if (minimap) {
 
         // reuse extents logic
         let points = [];
-        Object.values(nodes).forEach(n => points.push({ x: n.x, y: n.y }));
+        Object.values(nodes).forEach(n => {
+            if (!isNodeVisible(n)) return;
+            points.push({ x: n.x, y: n.y });
+        });
         Object.values(boxes).forEach(b => {
+            if (!isLayerVisible(b.layer)) return;
             points.push({ x: b.x, y: b.y });
             points.push({ x: b.x + b.width, y: b.y + b.height });
         });

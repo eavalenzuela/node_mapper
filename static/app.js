@@ -1044,13 +1044,26 @@ updateModeButtons();
 // top tabs
 const tabButtons = document.querySelectorAll(".tab-button");
 const tabPanels = document.querySelectorAll(".tab-panel");
+const tabPanelsContainer = document.getElementById("tab-panels");
+const syncTabPanelsVisibility = () => {
+    if (!tabPanelsContainer) return;
+    const hasActive = Array.from(tabPanels).some(panel => panel.classList.contains("active"));
+    tabPanelsContainer.classList.toggle("has-active", hasActive);
+};
 tabButtons.forEach(btn => {
     btn.addEventListener("click", () => {
         const tab = btn.dataset.tab;
-        tabButtons.forEach(other => other.classList.toggle("active", other === btn));
-        tabPanels.forEach(panel => panel.classList.toggle("active", panel.dataset.tab === tab));
+        const isActive = btn.classList.contains("active");
+        tabButtons.forEach(other => other.classList.remove("active"));
+        tabPanels.forEach(panel => panel.classList.remove("active"));
+        if (!isActive) {
+            btn.classList.add("active");
+            tabPanels.forEach(panel => panel.classList.toggle("active", panel.dataset.tab === tab));
+        }
+        syncTabPanelsVisibility();
     });
 });
+syncTabPanelsVisibility();
 
 // mini-map toggle
 const minimapToggle = document.getElementById("toggle-minimap");

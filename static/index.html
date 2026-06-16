@@ -32,15 +32,54 @@
         </div>
     </div>
 
-    <div id="tab-bar">
-        <button class="tab-button" data-tab="file" type="button">File</button>
-        <button class="tab-button" data-tab="analytics" type="button">Analytics</button>
-        <button class="tab-button" data-tab="arrange" type="button">Arrange</button>
-        <button class="tab-button" data-tab="view" type="button">View</button>
+    <div id="tab-region">
+    <div id="tab-bar" role="tablist">
+        <button class="tab-button" data-tab="file" type="button" role="tab" aria-selected="false">File</button>
+        <button class="tab-button" data-tab="analytics" type="button" role="tab" aria-selected="false">Analytics</button>
+        <button class="tab-button" data-tab="transforms" type="button" role="tab" aria-selected="false">Transforms</button>
+        <button class="tab-button" data-tab="arrange" type="button" role="tab" aria-selected="false">Arrange</button>
+        <button class="tab-button" data-tab="view" type="button" role="tab" aria-selected="false">View</button>
     </div>
 
     <div id="tab-panels">
         <div class="tab-panel" data-tab="file">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Account</h4>
+                    <small id="auth-status">Working anonymously</small>
+                </div>
+                <div id="auth-logged-out">
+                    <div class="row-inline">
+                        <input id="auth-username" type="text" placeholder="username">
+                        <input id="auth-password" type="password" placeholder="password">
+                    </div>
+                    <div class="button-row two">
+                        <button id="auth-login">Log in</button>
+                        <button id="auth-register">Register</button>
+                    </div>
+                </div>
+                <div id="auth-logged-in" class="hidden">
+                    <button id="auth-logout">Log out</button>
+                </div>
+            </div>
+
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Projects / Cases</h4>
+                    <small>Saved on the server.</small>
+                </div>
+                <div class="row-inline">
+                    <input id="project-name" type="text" placeholder="Project name">
+                    <button id="project-save" style="width:auto">Save</button>
+                </div>
+                <div class="button-row two">
+                    <button id="project-new">New / Clear</button>
+                    <button id="project-refresh">Refresh list</button>
+                </div>
+                <div id="project-list"></div>
+                <div id="version-list"></div>
+            </div>
+
             <div class="subsection">
                 <div class="subsection-header">
                     <h4>Import / Export</h4>
@@ -53,6 +92,10 @@
                     <option value="csv">CSV edge list (.csv)</option>
                     <option value="graphml">GraphML (.graphml/.xml)</option>
                 </select>
+                <label class="checkbox-inline">
+                    <input id="import-merge" type="checkbox">
+                    Merge into current graph (instead of replace)
+                </label>
 
                 <label class="input-label" for="load-file">Choose file</label>
                 <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,text/csv">
@@ -62,13 +105,37 @@
                         <label for="export-format">Export as</label>
                         <select id="export-format">
                             <option value="json">Graph JSON</option>
+                            <option value="csv">CSV edge list</option>
+                            <option value="graphml">GraphML</option>
                             <option value="svg">SVG</option>
                             <option value="png">PNG</option>
+                            <option value="report">HTML report</option>
                         </select>
                     </div>
                     <div class="io-col">
                         <button id="export-graph">Download export</button>
                     </div>
+                </div>
+                <div class="io-row">
+                    <div class="io-col">
+                        <label for="export-scope">Image scope</label>
+                        <select id="export-scope">
+                            <option value="content">Whole graph</option>
+                            <option value="viewport">Current view</option>
+                        </select>
+                    </div>
+                    <div class="io-col">
+                        <label for="png-scale">PNG scale</label>
+                        <select id="png-scale">
+                            <option value="1">1×</option>
+                            <option value="2" selected>2×</option>
+                            <option value="3">3×</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="button-row two">
+                    <button id="copy-png">Copy image</button>
+                    <button id="copy-json">Copy subgraph</button>
                 </div>
 
                 <button id="load-autosave">Load Autosave</button>
@@ -84,13 +151,43 @@
                 </div>
                 <button id="compute-stats">Compute stats</button>
                 <div id="analytics-stats"></div>
+            </div>
 
-                <h4>Find path A → B</h4>
-                <label>Start node ID</label>
-                <input id="path-start" type="text" placeholder="e.g., n0">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Centrality &amp; communities</h4>
+                    <small>Find key actors and clusters.</small>
+                </div>
+                <div class="button-row two">
+                    <button id="compute-centrality">Compute centrality</button>
+                    <button id="detect-communities">Detect communities</button>
+                </div>
+                <label>Rank by</label>
+                <select id="rank-metric">
+                    <option value="degree">Degree</option>
+                    <option value="betweenness">Betweenness</option>
+                    <option value="closeness">Closeness</option>
+                    <option value="pagerank">PageRank</option>
+                </select>
+                <div id="rank-table-wrap"></div>
+            </div>
 
-                <label>Target node ID</label>
-                <input id="path-end" type="text" placeholder="e.g., n3">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Find path A → B</h4>
+                    <small>Pick endpoints or use the selected node.</small>
+                </div>
+                <label>Start entity</label>
+                <div class="row-inline">
+                    <input id="path-start" type="text" list="node-options" placeholder="search by label/id">
+                    <button id="path-start-sel" type="button" title="Use selected node" style="width:auto">Use sel.</button>
+                </div>
+                <label>Target entity</label>
+                <div class="row-inline">
+                    <input id="path-end" type="text" list="node-options" placeholder="search by label/id">
+                    <button id="path-end-sel" type="button" title="Use selected node" style="width:auto">Use sel.</button>
+                </div>
+                <datalist id="node-options"></datalist>
 
                 <label>Algorithm</label>
                 <select id="path-algorithm">
@@ -102,6 +199,16 @@
                 <div class="button-row two" style="margin-top: 6px;">
                     <button id="find-path-btn">Find path</button>
                     <button id="clear-path-btn">Clear path</button>
+                </div>
+                <label>Neighborhood (N hops from start)</label>
+                <div class="row-inline">
+                    <input id="hops-n" type="number" min="1" max="6" value="1">
+                    <button id="select-neighborhood" type="button" style="width:auto">Select</button>
+                </div>
+                <label>All paths up to length k</label>
+                <div class="row-inline">
+                    <input id="allpaths-k" type="number" min="1" max="6" value="4">
+                    <button id="find-all-paths" type="button" style="width:auto">All paths</button>
                 </div>
 
                 <div id="analytics-path-result" style="margin-top: 8px;"></div>
@@ -236,7 +343,35 @@
             </div>
         </div>
 
+        <div class="tab-panel" data-tab="transforms">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Transform Hub</h4>
+                    <small>Run data-mining transforms on a selected entity.</small>
+                </div>
+                <small class="muted">Select a node, then run an applicable transform to expand the graph. Right-click a node for a quick menu.</small>
+                <div id="transforms-list"></div>
+            </div>
+        </div>
+
         <div class="tab-panel" data-tab="view">
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Workspace view</h4>
+                    <small>Switch how the graph is presented.</small>
+                </div>
+                <select id="view-mode">
+                    <option value="graph">Graph (SVG, editable)</option>
+                    <option value="canvas">Canvas (fast, large graphs)</option>
+                    <option value="bubble">Bubble view (by degree)</option>
+                    <option value="map">Geographic map</option>
+                    <option value="list">Entity list</option>
+                </select>
+                <label class="checkbox-inline">
+                    <input id="toggle-timeline" type="checkbox">
+                    Show timeline filter
+                </label>
+            </div>
             <div class="subsection">
                 <div class="subsection-header">
                     <h4>Mini-map</h4>
@@ -246,9 +381,38 @@
                     <input id="toggle-minimap" type="checkbox" checked>
                     Show mini-map overlay
                 </label>
-                <small>Mini-map appears in the top-right corner of the canvas.</small>
+                <small>Drag the mini-map to reposition it.</small>
+            </div>
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Visual encoding</h4>
+                    <small>Color &amp; size nodes by data.</small>
+                </div>
+                <label>Color nodes by</label>
+                <select id="encoding-mode">
+                    <option value="none">Manual color</option>
+                    <option value="type">Entity type</option>
+                    <option value="community">Community</option>
+                    <option value="degree">Degree</option>
+                    <option value="betweenness">Betweenness</option>
+                    <option value="closeness">Closeness</option>
+                    <option value="pagerank">PageRank</option>
+                </select>
+                <label>Size nodes by</label>
+                <select id="encoding-size">
+                    <option value="none">Uniform</option>
+                    <option value="degree">Degree</option>
+                    <option value="betweenness">Betweenness</option>
+                    <option value="closeness">Closeness</option>
+                    <option value="pagerank">PageRank</option>
+                </select>
+                <label class="checkbox-inline">
+                    <input id="toggle-legend" type="checkbox">
+                    Show type legend on canvas
+                </label>
             </div>
         </div>
+    </div>
     </div>
 
     <div id="layout">
@@ -264,45 +428,11 @@
             <div class="panel-content">
                 <div class="subsection">
                     <div class="subsection-header">
-                        <h4>Shape Palette</h4>
-                        <small>Drag a shape onto the canvas to create a node.</small>
+                        <h4>Entity Palette</h4>
+                        <small>Drag an entity type onto the canvas.</small>
                     </div>
-                    <div class="shape-palette">
-                        <div class="shape-item" draggable="true" data-shape="rect">
-                            <svg viewBox="0 0 36 24" aria-hidden="true">
-                                <rect x="4" y="4" width="28" height="16" rx="2"></rect>
-                            </svg>
-                            <span>Rect</span>
-                        </div>
-                        <div class="shape-item" draggable="true" data-shape="rounded">
-                            <svg viewBox="0 0 36 24" aria-hidden="true">
-                                <rect x="4" y="4" width="28" height="16" rx="6"></rect>
-                            </svg>
-                            <span>Rounded</span>
-                        </div>
-                        <div class="shape-item" draggable="true" data-shape="diamond">
-                            <svg viewBox="0 0 36 24" aria-hidden="true">
-                                <polygon points="18,3 33,12 18,21 3,12"></polygon>
-                            </svg>
-                            <span>Diamond</span>
-                        </div>
-                        <div class="shape-item" draggable="true" data-shape="cylinder">
-                            <svg viewBox="0 0 36 24" aria-hidden="true">
-                                <rect x="6" y="6" width="24" height="12"></rect>
-                                <ellipse cx="18" cy="6" rx="12" ry="4"></ellipse>
-                                <ellipse cx="18" cy="18" rx="12" ry="4"></ellipse>
-                            </svg>
-                            <span>Cylinder</span>
-                        </div>
-                        <div class="shape-item" draggable="true" data-shape="swimlane">
-                            <svg viewBox="0 0 36 24" aria-hidden="true">
-                                <rect x="4" y="4" width="28" height="16" rx="4"></rect>
-                                <rect x="4" y="4" width="28" height="6" rx="4"></rect>
-                                <line x1="4" y1="10" x2="32" y2="10"></line>
-                            </svg>
-                            <span>Swimlane</span>
-                        </div>
-                    </div>
+                    <input id="palette-search" type="text" placeholder="Filter entity types...">
+                    <div id="entity-palette"></div>
                 </div>
 
                 <div class="subsection">
@@ -310,8 +440,13 @@
                         <h4>Search / Filter</h4>
                         <small>Hide nodes that do not match your query.</small>
                     </div>
-                    <input id="search-input" type="text" placeholder="Search nodes...">
-                    <small>Matching nodes stay visible; others are hidden.</small>
+                    <input id="search-input" type="text" placeholder="Search (try type:domain)...">
+                    <div class="row-inline">
+                        <select id="filter-type">
+                            <option value="">All types</option>
+                        </select>
+                    </div>
+                    <small>Use <code>type:domain</code> to filter by entity type.</small>
                 </div>
             </div>
         </div>
@@ -355,20 +490,65 @@
                     </div>
                     <div id="node-empty-state" class="empty-state">Select a node to edit its properties.</div>
                     <div id="node-editor" class="property-form">
+                        <label>Entity type</label>
+                        <select id="edit-entity-type"></select>
+
+                        <label>Value</label>
+                        <input id="edit-value" type="text">
+                        <small id="edit-value-error" class="error-text hidden"></small>
+
                         <label>Label</label>
                         <input id="edit-label" type="text">
 
-                        <label>Color</label>
-                        <input id="edit-color" type="color">
+                        <div id="edit-properties"></div>
 
-                        <label>Size</label>
-                        <input id="edit-size" type="number" min="5" max="200">
+                        <label>Color</label>
+                        <div class="row-inline">
+                            <input id="edit-color" type="color">
+                            <div id="edit-color-swatches" class="swatches"></div>
+                        </div>
+
+                        <div class="row-inline">
+                            <div style="flex:1">
+                                <label>Shape</label>
+                                <select id="edit-shape">
+                                    <option value="circle">Circle</option>
+                                    <option value="rect">Rectangle</option>
+                                    <option value="rounded">Rounded</option>
+                                    <option value="diamond">Diamond</option>
+                                    <option value="cylinder">Cylinder</option>
+                                    <option value="swimlane">Swimlane</option>
+                                </select>
+                            </div>
+                            <div style="flex:1">
+                                <label>Size</label>
+                                <input id="edit-size" type="number" min="5" max="400">
+                            </div>
+                        </div>
+
+                        <div class="row-inline" id="edit-dimensions">
+                            <div style="flex:1">
+                                <label>Width</label>
+                                <input id="edit-width" type="number" min="20" max="800">
+                            </div>
+                            <div style="flex:1">
+                                <label>Height</label>
+                                <input id="edit-height" type="number" min="20" max="800">
+                            </div>
+                        </div>
 
                         <label>Group</label>
                         <input id="edit-group" type="text" placeholder="Group name">
 
                         <label>Description</label>
                         <textarea id="edit-desc"></textarea>
+
+                        <label class="checkbox-inline">
+                            <input id="edit-pinned" type="checkbox">
+                            Pin position (exclude from layouts)
+                        </label>
+
+                        <small id="edit-provenance" class="muted"></small>
 
                         <button id="apply-node-edit">Apply Node Changes</button>
                     </div>
@@ -392,6 +572,9 @@
 
                         <label>Width</label>
                         <input id="edge-width" type="number" min="1" max="10" value="2">
+
+                        <label>Weight (for shortest path)</label>
+                        <input id="edge-weight" type="number" min="0" step="0.1" placeholder="defaults to width">
 
                         <label class="checkbox-inline">
                             <input id="edge-directed" type="checkbox">
@@ -424,15 +607,47 @@
 
         <div id="canvas-wrap">
             <svg id="graphCanvas"></svg>
+            <canvas id="graphCanvasGl" class="hidden"></canvas>
+            <div id="alt-view" class="hidden"></div>
+            <div id="timeline" class="hidden">
+                <div class="timeline-row">
+                    <span class="timeline-label">Timeline</span>
+                    <input id="timeline-range" type="range" min="0" max="100" value="100">
+                    <span id="timeline-readout" class="muted"></span>
+                </div>
+            </div>
+            <div id="presence-indicator" title="Collaborators online"></div>
+            <div id="collab-toast" class="hidden"></div>
+            <div class="canvas-toolbar">
+                <button id="zoom-in" title="Zoom in">+</button>
+                <button id="zoom-out" title="Zoom out">−</button>
+                <button id="zoom-fit" class="wide" title="Fit graph to view">Fit</button>
+                <button id="zoom-reset" class="wide" title="Reset zoom to 100%">1:1</button>
+            </div>
+            <div id="canvas-legend" class="legend-floating hidden"></div>
             <div id="minimap-container" class="minimap-floating">
                 <div class="minimap-header">Mini-map</div>
                 <svg id="minimap" width="180" height="120"></svg>
+            </div>
+            <div id="onboarding" class="onboarding hidden">
+                <div class="onboarding-card">
+                    <h3>Welcome to Node Mapper</h3>
+                    <p>Build a link-analysis graph of typed entities.</p>
+                    <ul>
+                        <li><b>Drag</b> an entity from the palette onto the canvas, or use <b>New Node</b> mode.</li>
+                        <li><b>Right-click</b> a node to run <b>Transforms</b> that expand the graph.</li>
+                        <li><b>Shift-drag</b> the canvas to marquee-select; <b>Ctrl/⌘ C/V</b> to copy/paste.</li>
+                        <li><b>Analytics</b> tab finds key actors (centrality), clusters, and paths.</li>
+                    </ul>
+                    <button id="onboarding-dismiss">Got it</button>
+                </div>
             </div>
         </div>
     </div>
 </div>
 
-<script src="static/app.js"></script>
+<script src="static/entities.js"></script>
 <script src="static/layout.js"></script>
+<script src="static/app.js"></script>
 </body>
 </html>

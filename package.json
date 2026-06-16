@@ -1,0 +1,11 @@
+{
+  "name": "node-mapper",
+  "version": "1.0.0",
+  "description": "Browser-based node/link-analysis graph editor (Flask + vanilla JS).",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:py": "python -m pytest -q tests"
+  },
+  "license": "MIT"
+}

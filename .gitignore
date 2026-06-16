@@ -1,0 +1,10 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime data store (SQLite projects/cases)
+graph.db
+
+# Node
+node_modules/

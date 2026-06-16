@@ -195,6 +195,93 @@
         }
     }
 
+    // Default radius estimator for a node when no sizeOf callback is supplied.
+    // Mirrors the conventions used elsewhere in the app: prefer an explicit
+    // `size`, otherwise derive a radius from width/height.
+    function defaultNodeRadius(n) {
+        if (n.size) return n.size;
+        return Math.max(n.width || 60, n.height || 40) / 2;
+    }
+
+    // Generic circle-vs-circle overlap avoidance for an arbitrary array of
+    // node objects. Pinned nodes act as immovable anchors: other nodes are
+    // pushed away from them, but pinned nodes themselves never move.
+    //
+    // options:
+    //   sizeOf(node) -> radius   (optional; defaults to defaultNodeRadius)
+    //   padding                  (default 24) extra gap kept between circles
+    //   iterations               (default 60) relaxation passes
+    function separateNodes(nodes, options = {}) {
+        if (!Array.isArray(nodes) || nodes.length < 2) return;
+
+        const sizeOf = typeof options.sizeOf === "function"
+            ? options.sizeOf
+            : defaultNodeRadius;
+        const padding = options.padding ?? 24;
+        const iterations = options.iterations ?? 60;
+
+        // Precompute radii once.
+        const radii = nodes.map(n => sizeOf(n));
+
+        for (let iter = 0; iter < iterations; iter++) {
+            let moved = false;
+
+            for (let i = 0; i < nodes.length; i++) {
+                for (let j = i + 1; j < nodes.length; j++) {
+                    const a = nodes[i];
+                    const b = nodes[j];
+
+                    const minDist = radii[i] + radii[j] + padding;
+
+                    let dx = a.x - b.x;
+                    let dy = a.y - b.y;
+                    let dist = Math.sqrt(dx * dx + dy * dy);
+
+                    if (dist >= minDist) continue; // no overlap
+
+                    // Avoid divide-by-zero when two nodes are coincident:
+                    // nudge along a deterministic direction.
+                    if (dist < 1e-6) {
+                        dx = (i - j) || 1;
+                        dy = 1;
+                        dist = Math.sqrt(dx * dx + dy * dy);
+                    }
+
+                    const overlap = minDist - dist;
+                    const ux = dx / dist;
+                    const uy = dy / dist;
+
+                    const aPinned = a.pinned === true;
+                    const bPinned = b.pinned === true;
+
+                    if (aPinned && bPinned) {
+                        // Both fixed: nothing we can do.
+                        continue;
+                    } else if (aPinned) {
+                        // Only b may move; push it fully away from a.
+                        b.x -= ux * overlap;
+                        b.y -= uy * overlap;
+                    } else if (bPinned) {
+                        // Only a may move; push it fully away from b.
+                        a.x += ux * overlap;
+                        a.y += uy * overlap;
+                    } else {
+                        // Both free: split the correction evenly.
+                        const half = overlap / 2;
+                        a.x += ux * half;
+                        a.y += uy * half;
+                        b.x -= ux * half;
+                        b.y -= uy * half;
+                    }
+
+                    moved = true;
+                }
+            }
+
+            if (!moved) break;
+        }
+    }
+
     // ------------------------
     // GRID LAYOUT
     // ------------------------
@@ -230,10 +317,18 @@
             const nodeVMargin = options.nodeVMargin ?? 150;
 
             unboxed.forEach((n, i) => {
+                if (n.pinned === true) return; // never move pinned nodes
                 const row = Math.floor(i / nodeCols);
                 const col = i % nodeCols;
                 n.x = startX + col * nodeHMargin;
                 n.y = topY + row * nodeVMargin;
+            });
+
+            // resolve residual node-vs-node overlaps
+            separateNodes(unboxed, {
+                sizeOf: options.sizeOf,
+                padding: options.nodeSeparationPadding ?? 24,
+                iterations: options.nodeSeparationIterations ?? 60
             });
         }
     }
@@ -246,13 +341,22 @@
         const boxIds = getBoxIds(state);
         const unboxed = getUnboxedNodes(state);
 
-        const view = state.view || { scale: 1, tx: 0, ty: 0 };
-        const cx = (options.cx != null)
-            ? options.cx
-            : (window.innerWidth || 1200) / view.scale / 2 - view.tx / view.scale;
-        const cy = (options.cy != null)
-            ? options.cy
-            : (window.innerHeight || 800) / view.scale / 2 - view.ty / view.scale;
+        // Deterministic, headless-safe center: explicit cx/cy if given,
+        // otherwise the centroid of the current unboxed positions,
+        // falling back to the origin when there are no nodes.
+        let cx, cy;
+        if (options.cx != null && options.cy != null) {
+            cx = options.cx;
+            cy = options.cy;
+        } else if (unboxed.length > 0) {
+            let sx = 0, sy = 0;
+            unboxed.forEach(n => { sx += n.x; sy += n.y; });
+            cx = options.cx != null ? options.cx : sx / unboxed.length;
+            cy = options.cy != null ? options.cy : sy / unboxed.length;
+        } else {
+            cx = options.cx != null ? options.cx : 0;
+            cy = options.cy != null ? options.cy : 0;
+        }
 
         // 1. boxes on outer circle
         if (boxIds.length > 0) {
@@ -273,12 +377,34 @@
         // 2. unboxed nodes on inner circle
         if (unboxed.length > 0) {
             const count = unboxed.length;
-            const innerRadius = options.innerRadius ?? 350;
+
+            // Average node "size" used to size the ring so circumference fits.
+            const sizeOf = typeof options.sizeOf === "function"
+                ? options.sizeOf
+                : defaultNodeRadius;
+            let avgNodeSize = 0;
+            unboxed.forEach(n => { avgNodeSize += sizeOf(n); });
+            avgNodeSize = count ? avgNodeSize / count : 0;
+
+            // Dynamic minimum radius: enough circumference so that nodes
+            // (diameter ~= 2*avgNodeSize, plus a little padding) don't overlap.
+            // circumference = 2*pi*r must be >= count * spacingPerNode.
+            const spacingPerNode = avgNodeSize * 2 + (options.nodeSeparationPadding ?? 24);
+            const fitRadius = (count * spacingPerNode) / (2 * Math.PI);
+            const innerRadius = Math.max(options.innerRadius ?? 350, fitRadius);
 
             unboxed.forEach((n, i) => {
+                if (n.pinned === true) return; // never move pinned nodes
                 const angle = (i / count) * Math.PI * 2;
                 n.x = cx + Math.cos(angle) * innerRadius;
                 n.y = cy + Math.sin(angle) * innerRadius;
+            });
+
+            // resolve residual node-vs-node overlaps
+            separateNodes(unboxed, {
+                sizeOf: options.sizeOf,
+                padding: options.nodeSeparationPadding ?? 24,
+                iterations: options.nodeSeparationIterations ?? 60
             });
         }
     }
@@ -313,27 +439,86 @@
             separateBoxes(state, options.separationPadding ?? 40, options.separationIterations ?? 50);
         }
 
-        // 2. BFS layers for unboxed nodes beneath boxes
+        // 2. Cycle-safe leveling for unboxed nodes beneath boxes.
         if (unboxed.length > 0) {
             const idSet = new Set(unboxed.map(n => n.id));
 
-            // Initialize levels
+            // Build directed adjacency + in-degree over edges whose BOTH
+            // endpoints are unboxed (boxed children are ignored here).
+            const adjacency = {};   // source -> [targets]
+            const inDegree = {};    // node -> remaining in-degree
+            unboxed.forEach(n => {
+                adjacency[n.id] = [];
+                inDegree[n.id] = 0;
+            });
+            state.edges.forEach(edge => {
+                if (!idSet.has(edge.source) || !idSet.has(edge.target)) return;
+                if (edge.source === edge.target) return; // ignore self-loops
+                adjacency[edge.source].push(edge.target);
+                inDegree[edge.target]++;
+            });
+
+            // Kahn-style longest-path leveling. Seed the queue with all
+            // in-degree-0 nodes (the natural roots). If there are none (a pure
+            // cycle), seed with the lowest-id node so processing can start.
             const levelOf = {};
             unboxed.forEach(n => { levelOf[n.id] = 0; });
 
-            let queue = unboxed.map(n => n.id);
+            const queue = [];
+            const enqueued = new Set();
+            unboxed.forEach(n => {
+                if (inDegree[n.id] === 0) {
+                    queue.push(n.id);
+                    enqueued.add(n.id);
+                }
+            });
+            if (queue.length === 0) {
+                // Pure cycle among unboxed nodes: break it deterministically by
+                // forcing the lowest-id node to act as a root.
+                const rootId = unboxed
+                    .map(n => n.id)
+                    .reduce((lo, id) => (id < lo ? id : lo));
+                queue.push(rootId);
+                enqueued.add(rootId);
+            }
 
-            while (queue.length) {
-                const id = queue.shift();
-                state.edges.forEach(edge => {
-                    if (!idSet.has(edge.source) || !idSet.has(edge.target)) return;
+            // Process in topological order using a head pointer (avoids the
+            // O(n) cost of Array.shift). A processed-count guard guarantees
+            // termination even if the in-degree bookkeeping is confounded by a
+            // forced root inside a cycle.
+            let head = 0;
+            let processed = 0;
+            const totalNodes = unboxed.length;
+            while (head < queue.length && processed < totalNodes) {
+                const id = queue[head++];
+                processed++;
 
-                    if (edge.source === id && levelOf[edge.target] <= levelOf[id]) {
-                        levelOf[edge.target] = levelOf[id] + 1;
-                        queue.push(edge.target);
+                adjacency[id].forEach(target => {
+                    // Longest-path: a node sits one level below its deepest parent.
+                    if (levelOf[target] < levelOf[id] + 1) {
+                        levelOf[target] = levelOf[id] + 1;
+                    }
+                    inDegree[target]--;
+                    if (inDegree[target] <= 0 && !enqueued.has(target)) {
+                        queue.push(target);
+                        enqueued.add(target);
                     }
                 });
             }
+
+            // Any nodes never reached (left inside cycles) are parked on a row
+            // below everything assigned so far so the layout still terminates.
+            let maxLevel = 0;
+            unboxed.forEach(n => {
+                if (enqueued.has(n.id) && levelOf[n.id] > maxLevel) {
+                    maxLevel = levelOf[n.id];
+                }
+            });
+            unboxed.forEach(n => {
+                if (!enqueued.has(n.id)) {
+                    levelOf[n.id] = maxLevel + 1;
+                }
+            });
 
             // group by level
             const groups = {};
@@ -349,14 +534,26 @@
             const spacingY = options.nodeVMargin ?? 120;
             const startX = options.nodeStartX ?? 150;
 
+            // Center each row horizontally about the common midline x = startX,
+            // rather than every row starting flush-left at startX.
             Object.keys(groups).forEach(levelStr => {
                 const lvl = parseInt(levelStr, 10);
                 const arr = groups[lvl];
+                const rowWidth = (arr.length - 1) * spacingX;
+                const rowStartX = startX - rowWidth / 2;
                 arr.forEach((id, i) => {
                     const n = state.nodes[id];
-                    n.x = startX + i * spacingX;
+                    if (n.pinned === true) return; // never move pinned nodes
+                    n.x = rowStartX + i * spacingX;
                     n.y = baseY + lvl * spacingY;
                 });
+            });
+
+            // resolve residual node-vs-node overlaps
+            separateNodes(unboxed, {
+                sizeOf: options.sizeOf,
+                padding: options.nodeSeparationPadding ?? 24,
+                iterations: options.nodeSeparationIterations ?? 60
             });
         }
     }
@@ -392,13 +589,18 @@
         });
 
         unboxed.forEach(n => {
+            // Pinned nodes are fixed anchors: they still occupy space and
+            // repel other bodies (via their getters being read), but writes
+            // to their position are ignored so they never move.
+            const pinned = n.pinned === true;
             bodies.push({
                 type: "node",
                 id: n.id,
+                pinned,
                 get x() { return n.x; },
                 get y() { return n.y; },
-                set x(val) { n.x = val; },
-                set y(val) { n.y = val; },
+                set x(val) { if (!pinned) n.x = val; },
+                set y(val) { if (!pinned) n.y = val; },
                 radius: (n.size || 25) * 2
             });
         });
@@ -508,21 +710,31 @@
 
         if (!unboxed.length) return;
 
-        // degree calculation
+        const unboxedIds = new Set(unboxed.map(n => n.id));
+
+        // degree calculation — only count edges where BOTH endpoints are
+        // unboxed, so boxed children don't inflate a node's degree.
         const degree = {};
         unboxed.forEach(n => (degree[n.id] = 0));
         state.edges.forEach(edge => {
-            if (degree[edge.source] != null) degree[edge.source]++;
-            if (degree[edge.target] != null) degree[edge.target]++;
+            if (!unboxedIds.has(edge.source) || !unboxedIds.has(edge.target)) return;
+            degree[edge.source]++;
+            degree[edge.target]++;
         });
 
         // sort by degree
         const sorted = [...unboxed].sort((a, b) => degree[a.id] - degree[b.id]);
 
-        // tiering
+        // tiering. Use reduce-based max/min: spreading a very large array into
+        // Math.max(...arr) can throw RangeError (call-stack/arg-count limits).
         const tierCount = options.tiers ?? 4;
-        const maxDeg = Math.max(...sorted.map(n => degree[n.id]));
-        const minDeg = Math.min(...sorted.map(n => degree[n.id]));
+        const degList = sorted.map(n => degree[n.id]);
+        const maxDeg = degList.length
+            ? degList.reduce((m, d) => (d > m ? d : m), -Infinity)
+            : 0;
+        const minDeg = degList.length
+            ? degList.reduce((m, d) => (d < m ? d : m), Infinity)
+            : 0;
         const range = maxDeg - minDeg || 1;
 
         const tiers = Array.from({ length: tierCount }, () => []);
@@ -555,14 +767,15 @@
 
             const adj = upperNodes.length ? getUpperAdjacency(tierNodes, upperNodes) : null;
 
+            // Each node's desired X is the barycenter (average X) of its
+            // parents in the tier above; nodes with no parents fall back to baseX.
             let weighted = tierNodes.map(n => {
-                let targetX = 0;
+                let targetX;
 
                 if (adj && adj[n.id] && adj[n.id].length) {
-                    // compute median or average X of parent tier
                     const xs = adj[n.id].map(id => state.nodes[id].x);
-                    xs.sort((a, b) => a - b);
-                    targetX = xs[Math.floor(xs.length / 2)];
+                    const sum = xs.reduce((s, v) => s + v, 0);
+                    targetX = sum / xs.length; // barycenter of parents
                 } else {
                     targetX = baseX;
                 }
@@ -570,10 +783,22 @@
                 return { node: n, targetX };
             });
 
+            // Sort by desired X, then sweep left-to-right placing each node as
+            // close to its barycenter as possible while enforcing a minimum
+            // horizontal spacing between consecutive nodes.
             weighted.sort((a, b) => a.targetX - b.targetX);
 
-            weighted.forEach((entry, i) => {
-                entry.node.x = baseX + i * spacing;
+            let prevX = -Infinity;
+            weighted.forEach(entry => {
+                const desiredX = entry.targetX;
+                // Keep desired position unless it would crowd the previous node.
+                const placedX = prevX === -Infinity
+                    ? desiredX
+                    : Math.max(desiredX, prevX + spacing);
+                prevX = placedX;
+
+                if (entry.node.pinned === true) return; // never move pinned nodes
+                entry.node.x = placedX;
                 entry.node.y = y;
             });
         }
@@ -591,6 +816,13 @@
 
             spreadTier(tierNodes, upperNodes, y, baseX, nodeSpacing);
         }
+
+        // resolve residual node-vs-node overlaps across all tiers
+        separateNodes(unboxed, {
+            sizeOf: options.sizeOf,
+            padding: options.nodeSeparationPadding ?? 24,
+            iterations: options.nodeSeparationIterations ?? 60
+        });
     }
 
 
@@ -606,6 +838,7 @@
         hierarchical: hierarchicalLayout,
         weightedTree: weightedTreeLayout,
         force: forceLayout,
+        separateNodes,
         defaults: () => JSON.parse(JSON.stringify(defaultOptions))
     };
 

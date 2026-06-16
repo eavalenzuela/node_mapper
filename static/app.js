@@ -16,9 +16,71 @@ let activeLayerId = null;
 
 let currentMode = "select";  // "select" | "node" | "link" | "delete" | "box"
 
+// "Primary" selection (drives the single-item property editors) plus
+// set-based multi-selection (drives highlighting, marquee, copy/paste, group ops).
 let selectedNodeId = null;
 let selectedEdgeId = null;
 let selectedBoxId = null;
+
+let selectedNodes = new Set();
+let selectedEdges = new Set();
+let selectedBoxes = new Set();
+
+// Data-driven visual encoding: color/size nodes by type / community / a metric.
+const encoding = { mode: "none", min: 0, max: 1, sizeByMetric: "none", sizeMin: 0, sizeMax: 1 };
+
+function isNodeSelected(id) { return selectedNodes.has(id); }
+function isEdgeSelected(id) { return selectedEdges.has(id); }
+function isBoxSelected(id) { return selectedBoxes.has(id) || selectedBoxId === id; }
+
+function clearSelection() {
+    selectedNodes.clear();
+    selectedEdges.clear();
+    selectedBoxes.clear();
+    selectedNodeId = null;
+    selectedEdgeId = null;
+    selectedBoxId = null;
+}
+
+function selectNode(id, { additive = false } = {}) {
+    if (!additive) { selectedNodes.clear(); selectedEdges.clear(); selectedBoxes.clear(); selectedEdgeId = null; selectedBoxId = null; }
+    if (additive && selectedNodes.has(id)) {
+        selectedNodes.delete(id);
+        selectedNodeId = selectedNodes.size ? [...selectedNodes][selectedNodes.size - 1] : null;
+    } else {
+        selectedNodes.add(id);
+        selectedNodeId = id;
+    }
+}
+
+function selectEdge(id, { additive = false } = {}) {
+    if (!additive) { selectedNodes.clear(); selectedEdges.clear(); selectedBoxes.clear(); selectedNodeId = null; selectedBoxId = null; }
+    if (additive && selectedEdges.has(id)) {
+        selectedEdges.delete(id);
+        selectedEdgeId = selectedEdges.size ? [...selectedEdges][selectedEdges.size - 1] : null;
+    } else {
+        selectedEdges.add(id);
+        selectedEdgeId = id;
+    }
+}
+
+function selectBox(id, { additive = false } = {}) {
+    if (!additive) { selectedNodes.clear(); selectedEdges.clear(); selectedBoxes.clear(); selectedNodeId = null; selectedEdgeId = null; }
+    if (additive && selectedBoxes.has(id)) {
+        selectedBoxes.delete(id);
+        selectedBoxId = selectedBoxes.size ? [...selectedBoxes][selectedBoxes.size - 1] : null;
+    } else {
+        selectedBoxes.add(id);
+        selectedBoxId = id;
+    }
+}
+
+// Nodes to operate on for bulk actions: explicit multi-selection if present,
+// otherwise fall back to the legacy single-primary node.
+function getSelectedNodeIds() {
+    if (selectedNodes.size) return [...selectedNodes];
+    return selectedNodeId ? [selectedNodeId] : [];
+}
 
 // camera / viewport
 let view = { scale: 1, tx: 0, ty: 0 };
@@ -26,6 +88,14 @@ let view = { scale: 1, tx: 0, ty: 0 };
 // dragging
 let draggingNodeId = null;
 let dragOffset = { x: 0, y: 0 };
+let dragUndoPushed = false;
+let dragGroupStart = {};       // id -> {x,y} pre-drag positions (group drag)
+let dragAnchorStart = { x: 0, y: 0 };
+
+// marquee (rubber-band) selection
+let marqueeActive = false;
+let marqueeStart = { x: 0, y: 0 };
+let marqueeRect = null;
 
 let draggingBoxId = null;
 let dragBoxOffset = { x: 0, y: 0 };
@@ -216,11 +286,19 @@ function getShapeDefaults(shapeType) {
 }
 
 function normalizeNode(node = {}) {
-    const shapeType = node.shape || "circle";
+    const entityType = node.entityType || "generic";
+    const type = (typeof getEntityType === "function") ? getEntityType(entityType) : null;
+    const shapeType = node.shape || (type && type.shape) || "circle";
     const defaults = getShapeDefaults(shapeType);
     const normalized = { ...node };
+    normalized.entityType = entityType;
+    normalized.value = node.value != null ? node.value : (node.label || "");
+    normalized.properties = node.properties && typeof node.properties === "object" ? node.properties : {};
+    normalized.provenance = node.provenance && typeof node.provenance === "object"
+        ? node.provenance
+        : { source: "manual", createdAt: node.createdAt || Date.now() };
     normalized.shape = shapeType;
-    normalized.color = node.color || defaults.color;
+    normalized.color = node.color || (type && type.color) || defaults.color;
     normalized.stroke = node.stroke || defaults.stroke;
 
     if (shapeType === "circle") {
@@ -239,10 +317,21 @@ function normalizeNode(node = {}) {
     return normalized;
 }
 
+// Optional size-by-metric encoding multiplier (1 when not encoding by size).
+function nodeSizeFactor(node) {
+    if (typeof encoding === "undefined") return 1;
+    const m = encoding.sizeByMetric;
+    if (!m || m === "none") return 1;
+    if (!node.metrics || !Number.isFinite(node.metrics[m]) || !(encoding.sizeMax > encoding.sizeMin)) return 1;
+    const t = (node.metrics[m] - encoding.sizeMin) / (encoding.sizeMax - encoding.sizeMin);
+    return 0.7 + Math.max(0, Math.min(1, t)) * 1.8;
+}
+
 function getNodeDimensions(node) {
     const shapeType = node.shape || "circle";
+    const f = nodeSizeFactor(node);
     if (shapeType === "circle") {
-        const radius = node.size || getShapeDefaults("circle").size;
+        const radius = (node.size || getShapeDefaults("circle").size) * f;
         return {
             width: radius * 2,
             height: radius * 2,
@@ -253,8 +342,8 @@ function getNodeDimensions(node) {
     }
 
     const defaults = getShapeDefaults(shapeType);
-    const width = Number.isFinite(node.width) ? node.width : defaults.width;
-    const height = Number.isFinite(node.height) ? node.height : defaults.height;
+    const width = (Number.isFinite(node.width) ? node.width : defaults.width) * f;
+    const height = (Number.isFinite(node.height) ? node.height : defaults.height) * f;
     return {
         width,
         height,
@@ -500,12 +589,14 @@ function applyGraphPayload(graph = {}) {
         nodes[normalized.id] = normalized;
     });
     edges = (graph.edges || []).map((ed, i) => ({
+        ...ed,
         id: ed.id || `e${i}`,
         source: ed.source,
         target: ed.target,
         label: ed.label || "",
-        color: ed.color || "#888888",
-        width: ed.width || 2,
+        color: ed.color || undefined,
+        width: Number.isFinite(ed.width) ? ed.width : 2,
+        weight: Number.isFinite(ed.weight) ? ed.weight : undefined,
         directed: !!ed.directed,
         layer: ed.layer
     }));
@@ -525,9 +616,7 @@ function applyGraphPayload(graph = {}) {
     edgeCounter = edges.length;
     boxCounter = Object.keys(boxes).length;
 
-    selectedNodeId = null;
-    selectedEdgeId = null;
-    selectedBoxId = null;
+    clearSelection();
     analyticsState.stats = null;
     analyticsState.pathResult = null;
     analyticsState.pathError = null;
@@ -547,11 +636,44 @@ function resetPathHighlights() {
     pathHighlights = { nodes: new Set(), edges: new Set() };
 }
 
+let filterType = "";          // entity-type id from the dropdown ("" = all)
+let viewMode = "graph";        // graph | canvas | bubble | map | list
+const timeFilter = { active: false, min: 0, max: 0 }; // timeline brush
+
+// A node's timestamp (ms) for the timeline: explicit date/time property, else
+// its provenance.createdAt. Returns null if the node has no temporal data.
+function nodeTime(node) {
+    const p = node.properties || {};
+    const raw = p.date || p.time || p.timestamp || p.datetime;
+    if (raw != null && raw !== "") {
+        const t = Date.parse(raw);
+        if (Number.isFinite(t)) return t;
+        const num = Number(raw);
+        if (Number.isFinite(num)) return num;
+    }
+    if (node.provenance && Number.isFinite(node.provenance.createdAt)) return node.provenance.createdAt;
+    return null;
+}
+
 function isNodeVisible(node) {
     if (!isLayerVisible(node.layer)) return false;
+    if (filterType && (node.entityType || "generic") !== filterType) return false;
+    if (timeFilter.active) {
+        const t = nodeTime(node);
+        if (t != null && (t < timeFilter.min || t > timeFilter.max)) return false;
+    }
     if (!searchTerm) return true;
-    const text = ((node.label || "") + " " + (node.desc || "") + " " + (node.group || "")).toLowerCase();
-    return text.includes(searchTerm);
+    // support a "type:<id>" token alongside free text
+    let term = searchTerm;
+    const typeMatch = term.match(/type:(\S+)/);
+    if (typeMatch) {
+        if ((node.entityType || "generic").toLowerCase() !== typeMatch[1].toLowerCase()) return false;
+        term = term.replace(/type:\S+/, "").trim();
+        if (!term) return true;
+    }
+    const text = ((node.label || "") + " " + (node.value || "") + " " + (node.desc || "") + " " + (node.group || "") + " " +
+        Object.values(node.properties || {}).join(" ")).toLowerCase();
+    return text.includes(term);
 }
 
 function clearActiveGuides() {
@@ -908,19 +1030,21 @@ function renderAnalyticsPanel() {
     }
 
     if (pathEl) {
+        const esc = s => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         const p = analyticsState.pathResult;
         if (analyticsState.pathError) {
-            pathEl.innerHTML = `<div class="error-text">${analyticsState.pathError}</div>`;
+            pathEl.innerHTML = `<div class="error-text">${esc(analyticsState.pathError)}</div>`;
         } else if (!p) {
             pathEl.innerHTML = "<em>No path computed yet.</em>";
         } else {
-            const nodesStr = (p.nodes || []).join(" → ");
+            // show entity labels along the path, not raw ids
+            const nodesStr = (p.nodes || []).map(id => esc((nodes[id] && (nodes[id].label || nodes[id].value)) || id)).join(" → ");
             const costStr = typeof p.cost === "number" ? ` (cost ${p.cost.toFixed(2)})` : "";
             pathEl.innerHTML = `
-                <div><strong>Algorithm:</strong> ${p.algorithm || "auto"}</div>
+                <div><strong>Algorithm:</strong> ${esc(p.algorithm || "auto")}</div>
                 <div><strong>Path:</strong> ${nodesStr || "n/a"}</div>
                 ${costStr ? `<div><strong>Distance:</strong> ${p.cost.toFixed(2)}</div>` : ""}
-                <div><strong>Edges:</strong> ${(p.edges || []).join(", ") || "n/a"}</div>
+                <div><strong>Edges:</strong> ${esc((p.edges || []).join(", ")) || "n/a"}</div>
             `;
         }
     }
@@ -949,8 +1073,31 @@ function autosave() {
         graph: { nodes, edges, boxes, layers, activeLayerId },
         layoutSettings
     };
-    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
+    try {
+        localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(payload));
+        autosaveError = false;
+    } catch (e) {
+        // QuotaExceededError or private-mode failures must not crash the render loop
+        if (!autosaveError) console.warn("Autosave failed (storage quota?):", e);
+        autosaveError = true;
+    }
     updateAutosaveInfo();
+    if (typeof populateFilterTypes === "function") populateFilterTypes();
+    if (typeof populateNodeDatalist === "function") populateNodeDatalist();
+    // Mirror to the server project, if one is open (debounced separately).
+    if (typeof scheduleServerSave === "function") scheduleServerSave();
+}
+
+// Debounced autosave so we don't serialize+write the whole graph on every
+// pointermove frame. render() calls scheduleSave() instead of autosave().
+let autosaveError = false;
+let _autosaveTimer = null;
+function scheduleSave(delay = 600) {
+    if (_autosaveTimer) clearTimeout(_autosaveTimer);
+    _autosaveTimer = setTimeout(() => {
+        _autosaveTimer = null;
+        autosave();
+    }, delay);
 }
 
 // ---------- THEME ----------
@@ -1093,9 +1240,7 @@ document.getElementById("undo-btn").addEventListener("click", () => {
     const prev = undoStack.pop();
     redoStack.push(current);
     restoreFromSnapshot(prev);
-    selectedNodeId = null;
-    selectedEdgeId = null;
-    selectedBoxId = null;
+    clearSelection();
     render();
 });
 
@@ -1105,9 +1250,7 @@ document.getElementById("redo-btn").addEventListener("click", () => {
     const next = redoStack.pop();
     undoStack.push(current);
     restoreFromSnapshot(next);
-    selectedNodeId = null;
-    selectedEdgeId = null;
-    selectedBoxId = null;
+    clearSelection();
     render();
 });
 
@@ -1154,11 +1297,53 @@ function updateNodeEditor() {
     }
 
     const n = nodes[selectedNodeId];
+
+    // entity type select
+    const typeSel = document.getElementById("edit-entity-type");
+    if (typeSel) {
+        if (!typeSel.dataset.built) {
+            const cats = (typeof listEntityCategories === "function") ? listEntityCategories() : {};
+            typeSel.innerHTML = "";
+            Object.keys(cats).forEach(cat => {
+                const og = document.createElement("optgroup");
+                og.label = cat;
+                cats[cat].forEach(t => {
+                    const o = document.createElement("option");
+                    o.value = t.id; o.textContent = t.name;
+                    og.appendChild(o);
+                });
+                typeSel.appendChild(og);
+            });
+            typeSel.dataset.built = "1";
+        }
+        typeSel.value = n.entityType || "generic";
+    }
+
+    document.getElementById("edit-value").value = n.value != null ? n.value : "";
     document.getElementById("edit-label").value = n.label || "";
-    document.getElementById("edit-color").value = n.color || "#4682b4";
+    document.getElementById("edit-color").value = /^#/.test(n.color || "") ? n.color : "#4682b4";
     document.getElementById("edit-size").value = n.size || 25;
+    document.getElementById("edit-shape").value = n.shape || "circle";
+    document.getElementById("edit-width").value = Number.isFinite(n.width) ? n.width : 130;
+    document.getElementById("edit-height").value = Number.isFinite(n.height) ? n.height : 70;
     document.getElementById("edit-group").value = n.group || "";
     document.getElementById("edit-desc").value = n.desc || "";
+    const pinEl = document.getElementById("edit-pinned");
+    if (pinEl) pinEl.checked = !!n.pinned;
+
+    // show width/height only for non-circle shapes
+    const dims = document.getElementById("edit-dimensions");
+    if (dims) dims.style.display = (n.shape === "circle") ? "none" : "flex";
+
+    renderTypedProperties(n);
+    renderColorSwatches();
+    showValueValidation(n);
+
+    const prov = document.getElementById("edit-provenance");
+    if (prov) {
+        const src = n.provenance && n.provenance.source ? n.provenance.source : "manual";
+        prov.textContent = "Source: " + src;
+    }
 
     const locked = isLayerLocked(n.layer);
     setEditorDisabled(editor, locked);
@@ -1168,18 +1353,86 @@ function updateNodeEditor() {
     if (locked) return;
 }
 
+// Render the per-type property fields into #edit-properties.
+function renderTypedProperties(n) {
+    const wrap = document.getElementById("edit-properties");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const type = (typeof getEntityType === "function") ? getEntityType(n.entityType) : null;
+    if (!type || !type.properties || !type.properties.length) return;
+    const header = document.createElement("div");
+    header.className = "eyebrow";
+    header.textContent = "Properties";
+    wrap.appendChild(header);
+    type.properties.forEach(p => {
+        const lbl = document.createElement("label");
+        lbl.textContent = p.label || p.key;
+        wrap.appendChild(lbl);
+        const inp = document.createElement("input");
+        inp.type = p.type === "number" ? "number" : "text";
+        inp.dataset.propKey = p.key;
+        inp.className = "prop-input";
+        const provFields = (n.provenance && n.provenance.fields) || {};
+        if (provFields[p.key] && String(provFields[p.key]).startsWith("transform")) inp.disabled = true;
+        inp.value = (n.properties && n.properties[p.key] != null) ? n.properties[p.key] : "";
+        wrap.appendChild(inp);
+    });
+}
+
+function renderColorSwatches() {
+    const wrap = document.getElementById("edit-color-swatches");
+    if (!wrap) return;
+    if (wrap.dataset.built) return;
+    const swatches = ["#4682b4", "#e15759", "#59a14f", "#f28e2b", "#b07aa1", "#76b7b2", "#edc948", "#9c755f", "#0f172a", "#94a3b8"];
+    wrap.innerHTML = "";
+    swatches.forEach(c => {
+        const s = document.createElement("button");
+        s.type = "button";
+        s.className = "swatch";
+        s.style.background = c;
+        s.title = c;
+        s.addEventListener("click", () => { const ec = document.getElementById("edit-color"); if (ec) ec.value = c; });
+        wrap.appendChild(s);
+    });
+    wrap.dataset.built = "1";
+}
+
+function showValueValidation(n) {
+    const el = document.getElementById("edit-value-error");
+    if (!el) return;
+    const err = (typeof validateEntityValue === "function") ? validateEntityValue(n.entityType, n.value) : null;
+    if (err) { el.textContent = err; el.classList.remove("hidden"); }
+    else { el.textContent = ""; el.classList.add("hidden"); }
+}
+
 document.getElementById("apply-node-edit").addEventListener("click", () => {
     if (!selectedNodeId || !nodes[selectedNodeId]) return;
     if (isLayerLocked(nodes[selectedNodeId].layer)) return;
     pushUndo();
 
     const n = nodes[selectedNodeId];
-    n.label = document.getElementById("edit-label").value;
+    n.entityType = document.getElementById("edit-entity-type").value || "generic";
+    n.value = document.getElementById("edit-value").value;
+    n.label = document.getElementById("edit-label").value || n.value;
     n.color = document.getElementById("edit-color").value || "#4682b4";
+    n.shape = document.getElementById("edit-shape").value || "circle";
     n.size = parseFloat(document.getElementById("edit-size").value) || 25;
+    const w = parseFloat(document.getElementById("edit-width").value);
+    const h = parseFloat(document.getElementById("edit-height").value);
+    if (Number.isFinite(w)) n.width = w;
+    if (Number.isFinite(h)) n.height = h;
     n.group = document.getElementById("edit-group").value || "";
     n.desc = document.getElementById("edit-desc").value || "";
+    n.pinned = !!document.getElementById("edit-pinned").checked;
 
+    // typed properties
+    const props = {};
+    document.querySelectorAll("#edit-properties .prop-input").forEach(inp => {
+        props[inp.dataset.propKey] = inp.value;
+    });
+    n.properties = props;
+
+    nodes[selectedNodeId] = normalizeNode(n);
     render();
 });
 
@@ -1207,8 +1460,10 @@ function updateEdgeEditor() {
     }
 
     document.getElementById("edge-label").value = e.label || "";
-    document.getElementById("edge-color").value = e.color || "#888888";
+    document.getElementById("edge-color").value = /^#/.test(e.color || "") ? e.color : "#888888";
     document.getElementById("edge-width").value = e.width || 2;
+    const wEl = document.getElementById("edge-weight");
+    if (wEl) wEl.value = Number.isFinite(e.weight) ? e.weight : "";
     document.getElementById("edge-directed").checked = !!e.directed;
 
     const locked = isLayerLocked(e.layer);
@@ -1228,6 +1483,8 @@ document.getElementById("apply-edge-edit").addEventListener("click", () => {
     e.label = document.getElementById("edge-label").value;
     e.color = document.getElementById("edge-color").value || "#888888";
     e.width = parseFloat(document.getElementById("edge-width").value) || 2;
+    const wVal = parseFloat(document.getElementById("edge-weight").value);
+    e.weight = Number.isFinite(wVal) ? wVal : undefined;
     e.directed = document.getElementById("edge-directed").checked;
 
     render();
@@ -1379,26 +1636,63 @@ function downloadBlob(blob, filename) {
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-function buildExportableSvg() {
+let exporting = false;
+
+// Build a clean, standalone SVG for export — without editor chrome (resize
+// handles, snap guides, selection/marquee rings). scope "content" fits the whole
+// graph; "viewport" captures the current view. dpi multiplies raster output.
+function buildExportableSvg({ scope = "viewport" } = {}) {
+    // Re-render once with selection/guides cleared and the exporting flag set so
+    // chrome is omitted, then clone the clean DOM and restore the live view.
+    const saved = {
+        n: [...selectedNodes], e: [...selectedEdges], b: [...selectedBoxes],
+        nId: selectedNodeId, eId: selectedEdgeId, bId: selectedBoxId, guides: activeGuides
+    };
+    exporting = true;
+    selectedNodes = new Set(); selectedEdges = new Set(); selectedBoxes = new Set();
+    selectedNodeId = selectedEdgeId = selectedBoxId = null;
+    activeGuides = { vertical: [], horizontal: [] };
+    flushRender();
     const clone = svg.cloneNode(true);
-    const width = svg.clientWidth || parseFloat(svg.getAttribute("width")) || 1024;
-    const height = svg.clientHeight || parseFloat(svg.getAttribute("height")) || 768;
-    clone.setAttribute("width", width);
-    clone.setAttribute("height", height);
-    if (!clone.getAttribute("viewBox")) {
-        clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    }
+    exporting = false;
+    selectedNodes = new Set(saved.n); selectedEdges = new Set(saved.e); selectedBoxes = new Set(saved.b);
+    selectedNodeId = saved.nId; selectedEdgeId = saved.eId; selectedBoxId = saved.bId;
+    activeGuides = saved.guides;
+    flushRender();
 
     const computed = getComputedStyle(document.body);
     const canvasBg = computed.getPropertyValue("--canvas-bg")?.trim() || "#ffffff";
-    const nodeLabelColor = computed.getPropertyValue("--node-label")?.trim() || "#0f172a";
-    const bgRect = clone.querySelector("#svg-bg");
-    if (bgRect) {
-        bgRect.setAttribute("fill", canvasBg);
+
+    let width, height;
+    const margin = 40;
+    if (scope === "content") {
+        const b = getGraphBounds();
+        if (b) {
+            width = Math.max(1, Math.round(b.width + 2 * margin));
+            height = Math.max(1, Math.round(b.height + 2 * margin));
+            const vp = clone.querySelector("#viewport");
+            if (vp) vp.setAttribute("transform", `translate(${-b.minX + margin},${-b.minY + margin}) scale(1)`);
+        } else {
+            width = svg.clientWidth || 1024;
+            height = svg.clientHeight || 768;
+        }
+    } else {
+        width = svg.clientWidth || parseFloat(svg.getAttribute("width")) || 1024;
+        height = svg.clientHeight || parseFloat(svg.getAttribute("height")) || 768;
     }
-    clone.querySelectorAll(".node-label").forEach(label => {
-        label.setAttribute("fill", nodeLabelColor);
-    });
+
+    clone.setAttribute("width", width);
+    clone.setAttribute("height", height);
+    clone.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    clone.setAttribute("xmlns", NS);
+
+    // full-bleed background rect so the output isn't transparent
+    const fullBg = document.createElementNS(NS, "rect");
+    fullBg.setAttribute("x", 0); fullBg.setAttribute("y", 0);
+    fullBg.setAttribute("width", width); fullBg.setAttribute("height", height);
+    fullBg.setAttribute("fill", canvasBg);
+    clone.insertBefore(fullBg, clone.firstChild);
+
     return { svg: clone, width, height, background: canvasBg };
 }
 
@@ -1407,20 +1701,20 @@ function serializeSvgElement(element) {
     return serializer.serializeToString(element);
 }
 
-function svgStringToPngBlob(svgString, width, height, background) {
+function svgStringToPngBlob(svgString, width, height, background, dpi = 1) {
     return new Promise((resolve, reject) => {
         const image = new Image();
         const blob = new Blob([svgString], { type: "image/svg+xml" });
         const url = URL.createObjectURL(blob);
         image.onload = () => {
             const canvas = document.createElement("canvas");
-            canvas.width = width;
-            canvas.height = height;
+            canvas.width = Math.round(width * dpi);
+            canvas.height = Math.round(height * dpi);
             const ctx = canvas.getContext("2d");
             if (ctx) {
                 ctx.fillStyle = background || "#ffffff";
-                ctx.fillRect(0, 0, width, height);
-                ctx.drawImage(image, 0, 0);
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
                 canvas.toBlob(resultBlob => {
                     URL.revokeObjectURL(url);
                     if (resultBlob) resolve(resultBlob);
@@ -1456,7 +1750,13 @@ document.getElementById("load-file").addEventListener("change", e => {
                 graph = parseGraphML(reader.result);
             }
             if (!graph) throw new Error("Unable to parse file.");
-            applyGraphPayload(graph);
+            const merge = document.getElementById("import-merge")?.checked;
+            if (merge) {
+                ensureActiveLayer();
+                mergeGraphPayload(graph);
+            } else {
+                applyGraphPayload(graph);
+            }
             render();
         } catch (err) {
             console.error("Import error", err);
@@ -1470,20 +1770,34 @@ document.getElementById("load-file").addEventListener("change", e => {
 
 document.getElementById("export-graph").addEventListener("click", async () => {
     const format = document.getElementById("export-format").value;
+    const scope = document.getElementById("export-scope")?.value || "content";
+    const dpi = parseInt(document.getElementById("png-scale")?.value || "2", 10);
     const graph = { nodes, edges, boxes, layers, activeLayerId, layoutSettings };
+
     if (format === "json") {
-        const blob = new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" });
-        downloadBlob(blob, "graph.json");
+        downloadBlob(new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" }), "graph.json");
+        return;
+    }
+    if (format === "csv") {
+        downloadBlob(new Blob([buildCSV()], { type: "text/csv" }), "graph-edges.csv");
+        return;
+    }
+    if (format === "graphml") {
+        downloadBlob(new Blob([buildGraphML()], { type: "application/xml" }), "graph.graphml");
+        return;
+    }
+    if (format === "report") {
+        downloadBlob(new Blob([buildReportHTML()], { type: "text/html" }), "graph-report.html");
         return;
     }
 
-    const { svg: svgCopy, width, height, background } = buildExportableSvg();
+    const { svg: svgCopy, width, height, background } = buildExportableSvg({ scope });
     const svgString = serializeSvgElement(svgCopy);
     if (format === "svg") {
         downloadBlob(new Blob([svgString], { type: "image/svg+xml" }), "graph.svg");
     } else if (format === "png") {
         try {
-            const pngBlob = await svgStringToPngBlob(svgString, width, height, background);
+            const pngBlob = await svgStringToPngBlob(svgString, width, height, background, dpi);
             downloadBlob(pngBlob, "graph.png");
         } catch (err) {
             console.error("PNG export failed", err);
@@ -1534,8 +1848,10 @@ if (findPathBtn) {
         const startInput = document.getElementById("path-start");
         const endInput = document.getElementById("path-end");
         const algoSelect = document.getElementById("path-algorithm");
-        const startId = (startInput?.value || "").trim();
-        const endId = (endInput?.value || "").trim();
+        const startRaw = (startInput?.value || "").trim();
+        const endRaw = (endInput?.value || "").trim();
+        const startId = startRaw ? resolveNodeRef(startRaw) : null;
+        const endId = endRaw ? resolveNodeRef(endRaw) : null;
         const algorithm = algoSelect?.value || "auto";
         runAnalytics({ startId: startId || null, endId: endId || null, algorithm });
     });
@@ -1554,19 +1870,85 @@ if (clearPathBtn) {
 
 // ---------- PAN & ZOOM ----------
 
+const MIN_SCALE = 0.05;
+const MAX_SCALE = 8;
+
 svg.addEventListener("wheel", e => {
     e.preventDefault();
     const delta = -e.deltaY;
     const zoomFactor = delta > 0 ? 1.1 : 0.9;
+    const targetScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.scale * zoomFactor));
+    const effective = targetScale / view.scale;
+    if (effective === 1) return; // already clamped at a limit
 
     const worldPos = screenToWorld(e.clientX, e.clientY);
 
-    view.tx = (view.tx - worldPos.x * view.scale) * zoomFactor + worldPos.x * (view.scale * zoomFactor);
-    view.ty = (view.ty - worldPos.y * view.scale) * zoomFactor + worldPos.y * (view.scale * zoomFactor);
-    view.scale *= zoomFactor;
+    view.tx = (view.tx - worldPos.x * view.scale) * effective + worldPos.x * (view.scale * effective);
+    view.ty = (view.ty - worldPos.y * view.scale) * effective + worldPos.y * (view.scale * effective);
+    view.scale *= effective;
 
     render();
 }, { passive: false });
+
+// ---------- VIEW HELPERS (shared by zoom controls, minimap, export) ----------
+
+// World-space bounding box of all visible nodes + boxes (null if empty).
+function getGraphBounds({ visibleOnly = true } = {}) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let any = false;
+    Object.values(nodes).forEach(n => {
+        if (visibleOnly && !isNodeVisible(n)) return;
+        const { halfWidth, halfHeight } = getNodeDimensions(n);
+        minX = Math.min(minX, n.x - halfWidth);
+        minY = Math.min(minY, n.y - halfHeight);
+        maxX = Math.max(maxX, n.x + halfWidth);
+        maxY = Math.max(maxY, n.y + halfHeight);
+        any = true;
+    });
+    Object.values(boxes).forEach(b => {
+        if (visibleOnly && !isLayerVisible(b.layer)) return;
+        minX = Math.min(minX, b.x);
+        minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width);
+        maxY = Math.max(maxY, b.y + b.height);
+        any = true;
+    });
+    if (!any) return null;
+    return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+function fitToContent(padding = 80) {
+    const b = getGraphBounds();
+    if (!b) { resetView(); return; }
+    const vw = svg.clientWidth || 800;
+    const vh = svg.clientHeight || 600;
+    const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE,
+        Math.min((vw - 2 * padding) / (b.width || 1), (vh - 2 * padding) / (b.height || 1))));
+    view.scale = scale;
+    view.tx = vw / 2 - (b.minX + b.width / 2) * scale;
+    view.ty = vh / 2 - (b.minY + b.height / 2) * scale;
+    render();
+}
+
+function resetView() {
+    view.scale = 1;
+    view.tx = 0;
+    view.ty = 0;
+    render();
+}
+
+function zoomAtCenter(factor) {
+    const targetScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.scale * factor));
+    const effective = targetScale / view.scale;
+    if (effective === 1) return;
+    const cx = (svg.clientWidth || 800) / 2;
+    const cy = (svg.clientHeight || 600) / 2;
+    const worldPos = screenToWorld(svg.getBoundingClientRect().left + cx, svg.getBoundingClientRect().top + cy);
+    view.tx = (view.tx - worldPos.x * view.scale) * effective + worldPos.x * (view.scale * effective);
+    view.ty = (view.ty - worldPos.y * view.scale) * effective + worldPos.y * (view.scale * effective);
+    view.scale *= effective;
+    render();
+}
 
 // ---------- POINTER INTERACTION ----------
 
@@ -1576,6 +1958,8 @@ svg.addEventListener("pointerdown", e => {
     const boxId  = e.target.dataset?.boxId;
     const resizeId = e.target.dataset?.resizeBoxId;
     const corner = e.target.dataset?.resizeCorner;
+
+    if (e.button === 2) return;  // right button → handled by contextmenu
 
     if (e.button === 1) {  // middle mouse
         panning = true;
@@ -1590,6 +1974,7 @@ svg.addEventListener("pointerdown", e => {
         // start resizing
         resizingBoxId = resizeId;
         resizeCorner = corner;
+        dragUndoPushed = false;
         svg.setPointerCapture(e.pointerId);
         return;
     }
@@ -1601,10 +1986,9 @@ svg.addEventListener("pointerdown", e => {
         dragBoxOffset.x = pos.x - b.x;
         dragBoxOffset.y = pos.y - b.y;
         draggingBoxId = boxId;
+        dragUndoPushed = false;
 
-        selectedBoxId = boxId;
-        selectedNodeId = null;
-        selectedEdgeId = null;
+        selectBox(boxId, { additive: e.shiftKey });
 
         svg.setPointerCapture(e.pointerId);
         return;
@@ -1637,10 +2021,14 @@ svg.addEventListener("pointerdown", e => {
         }
 
         if (currentMode === "select") {
-            pushUndo();
-            selectedNodeId = nodeId;
-            selectedEdgeId = null;
-            selectedBoxId = n.box || null;
+            // Selecting must NOT push undo (it would wipe redo on a bare click).
+            // If clicking an already-selected node without shift, keep the whole
+            // multi-selection so a drag moves the group; otherwise (re)select.
+            if (!(isNodeSelected(nodeId) && !e.shiftKey)) {
+                selectNode(nodeId, { additive: e.shiftKey });
+            } else {
+                selectedNodeId = nodeId;
+            }
             updateNodeEditor();
             updateEdgeEditor();
 
@@ -1648,7 +2036,15 @@ svg.addEventListener("pointerdown", e => {
             dragOffset.x = pos.x - n.x;
             dragOffset.y = pos.y - n.y;
             draggingNodeId = nodeId;
+            dragUndoPushed = false;
+            // capture pre-drag positions of the whole selection for group drag
+            dragGroupStart = {};
+            getSelectedNodeIds().forEach(id => {
+                if (nodes[id] && !isLayerLocked(nodes[id].layer)) dragGroupStart[id] = { x: nodes[id].x, y: nodes[id].y };
+            });
+            dragAnchorStart = { x: n.x, y: n.y };
             svg.setPointerCapture(e.pointerId);
+            render();
             return;
         }
     }
@@ -1666,9 +2062,7 @@ svg.addEventListener("pointerdown", e => {
         }
 
         if (currentMode === "select") {
-            selectedEdgeId = edgeId;
-            selectedNodeId = null;
-            selectedBoxId = null;
+            selectEdge(edgeId, { additive: e.shiftKey });
             updateEdgeEditor();
             updateNodeEditor();
             render();
@@ -1703,14 +2097,20 @@ svg.addEventListener("pointerdown", e => {
         }
 
         if (currentMode === "select") {
-            // start panning
+            if (e.shiftKey) {
+                // marquee (rubber-band) selection
+                marqueeActive = true;
+                marqueeStart = { x: pos.x, y: pos.y };
+                marqueeRect = { x: pos.x, y: pos.y, w: 0, h: 0 };
+                svg.setPointerCapture(e.pointerId);
+                return;
+            }
+            // start panning + clear selection
             panning = true;
             panStart = { x: e.clientX, y: e.clientY };
             panViewStart = { tx: view.tx, ty: view.ty };
             svg.setPointerCapture(e.pointerId);
-            selectedNodeId = null;
-            selectedEdgeId = null;
-            selectedBoxId = null;
+            clearSelection();
             updateNodeEditor();
             updateEdgeEditor();
             render();
@@ -1727,8 +2127,8 @@ svg.addEventListener("dragover", e => {
 
 svg.addEventListener("drop", e => {
     if (!e.dataTransfer) return;
-    const shapeType = e.dataTransfer.getData("text/plain");
-    if (!shapeType) return;
+    const dropped = e.dataTransfer.getData("text/plain");
+    if (!dropped) return;
     e.preventDefault();
 
     if (isLayerLocked(activeLayerId)) {
@@ -1738,19 +2138,45 @@ svg.addEventListener("drop", e => {
 
     pushUndo();
     const pos = screenToWorld(e.clientX, e.clientY);
-    createNodeAt(pos.x, pos.y, { shape: shapeType });
+    // dropped value is an entity type id (registry includes plain shapes too)
+    const id = createNodeAt(pos.x, pos.y, { entityType: dropped });
+    selectNode(id);
     render();
 });
 
 svg.addEventListener("pointermove", e => {
-    // Dragging a node
+    // Marquee (rubber-band) selection
+    if (marqueeActive) {
+        const pos = screenToWorld(e.clientX, e.clientY);
+        marqueeRect = {
+            x: Math.min(marqueeStart.x, pos.x),
+            y: Math.min(marqueeStart.y, pos.y),
+            w: Math.abs(pos.x - marqueeStart.x),
+            h: Math.abs(pos.y - marqueeStart.y)
+        };
+        render();
+        return;
+    }
+
+    // Dragging a node (and the rest of the selection, as a group)
     if (draggingNodeId) {
         const pos = screenToWorld(e.clientX, e.clientY);
         const n = nodes[draggingNodeId];
         const raw = { x: pos.x - dragOffset.x, y: pos.y - dragOffset.y };
         const snapped = applyNodeSnapping(raw, n);
-        n.x = snapped.x;
-        n.y = snapped.y;
+        if (!dragUndoPushed) { pushUndo(); dragUndoPushed = true; }
+        const groupIds = Object.keys(dragGroupStart);
+        if (groupIds.length > 1) {
+            const dx = snapped.x - dragAnchorStart.x;
+            const dy = snapped.y - dragAnchorStart.y;
+            groupIds.forEach(id => {
+                const m = nodes[id];
+                if (m) { m.x = dragGroupStart[id].x + dx; m.y = dragGroupStart[id].y + dy; }
+            });
+        } else {
+            n.x = snapped.x;
+            n.y = snapped.y;
+        }
         activeGuides = snapSettings.showGuides ? snapped.guides : { vertical: [], horizontal: [] };
         render();
         return;
@@ -1761,6 +2187,7 @@ svg.addEventListener("pointermove", e => {
         clearActiveGuides();
         const b = boxes[resizingBoxId];
         const pos = screenToWorld(e.clientX, e.clientY);
+        if (!dragUndoPushed) { pushUndo(); dragUndoPushed = true; }
 
         const minW = 100;
         const minH = 80;
@@ -1799,6 +2226,7 @@ svg.addEventListener("pointermove", e => {
     if (draggingBoxId) {
         const b = boxes[draggingBoxId];
         const pos = screenToWorld(e.clientX, e.clientY);
+        if (!dragUndoPushed) { pushUndo(); dragUndoPushed = true; }
 
         const oldX = b.x;
         const oldY = b.y;
@@ -1837,8 +2265,36 @@ svg.addEventListener("pointermove", e => {
 });
 
 svg.addEventListener("pointerup", e => {
+    // Finish marquee selection
+    if (marqueeActive) {
+        try { svg.releasePointerCapture(e.pointerId); } catch (_) {}
+        const r = marqueeRect;
+        marqueeActive = false;
+        marqueeRect = null;
+        if (r && (r.w > 3 || r.h > 3)) {
+            if (!e.shiftKey) clearSelection();
+            Object.values(nodes).forEach(n => {
+                if (!isNodeVisible(n) || isLayerLocked(n.layer)) return;
+                if (n.x >= r.x && n.x <= r.x + r.w && n.y >= r.y && n.y <= r.y + r.h) {
+                    selectedNodes.add(n.id);
+                    selectedNodeId = n.id;
+                }
+            });
+            // also catch boxes fully inside
+            Object.values(boxes).forEach(b => {
+                if (!isLayerVisible(b.layer)) return;
+                if (b.x >= r.x && b.y >= r.y && b.x + b.width <= r.x + r.w && b.y + b.height <= r.y + r.h) {
+                    selectedBoxes.add(b.id);
+                }
+            });
+        }
+        render();
+        return;
+    }
+
     if (draggingNodeId) {
-        updateNodeBoxMembership(draggingNodeId);
+        const moved = Object.keys(dragGroupStart);
+        (moved.length ? moved : [draggingNodeId]).forEach(id => updateNodeBoxMembership(id));
     }
 
     if (draggingNodeId || draggingBoxId || panning) {
@@ -1856,6 +2312,7 @@ svg.addEventListener("pointerup", e => {
 
     draggingNodeId = null;
     draggingBoxId = null;
+    dragGroupStart = {};
     panning = false;
     if (activeGuides.vertical.length || activeGuides.horizontal.length) {
         clearActiveGuides();
@@ -1865,17 +2322,33 @@ svg.addEventListener("pointerup", e => {
 
 // ---------- CREATION / DELETION HELPERS ----------
 
+// Server-authoritative unique ids so graphs from different sessions merge
+// without id collisions (falls back to a time+random id on old browsers).
+function genId(prefix) {
+    nodeCounter++; // keep counters advancing for any legacy consumers
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return prefix + crypto.randomUUID();
+    return prefix + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 9);
+}
+
 function createNodeAt(x, y, options = {}) {
     ensureActiveLayer();
-    const id = "n" + (nodeCounter++);
-    const shapeType = options.shape || "circle";
+    const id = genId("n");
+    const entityType = options.entityType || "generic";
+    const type = (typeof getEntityType === "function") ? getEntityType(entityType) : null;
+    const shapeType = options.shape || (type && type.shape) || "circle";
     const defaults = getShapeDefaults(shapeType);
+    const label = options.label != null ? options.label
+        : (options.value != null ? options.value
+            : (type && type.id !== "generic" && !type.category.startsWith("Shapes") ? type.name : "Node " + nodeCounter));
     const baseNode = {
         id,
         x,
         y,
-        label: "Node " + nodeCounter,
-        color: options.color || defaults.color,
+        entityType,
+        value: options.value != null ? options.value : label,
+        properties: options.properties || {},
+        label,
+        color: options.color || (type && type.color) || defaults.color,
         stroke: options.stroke || defaults.stroke,
         size: options.size || defaults.size,
         width: options.width || defaults.width,
@@ -1884,7 +2357,8 @@ function createNodeAt(x, y, options = {}) {
         desc: "",
         group: "",
         box: null,
-        layer: activeLayerId
+        layer: activeLayerId,
+        provenance: options.provenance || { source: "manual", createdAt: Date.now() }
     };
     nodes[id] = normalizeNode(baseNode);
     return id;
@@ -1901,7 +2375,7 @@ function deleteNode(id) {
 
 function createEdge(a, b) {
     ensureActiveLayer();
-    const id = "e" + (edgeCounter++);
+    const id = genId("e");
     edges.push({
         id,
         source: a,
@@ -1915,20 +2389,129 @@ function createEdge(a, b) {
     return id;
 }
 
-function createBoxAt(x, y) {
+function createBoxAt(x, y, opts = {}) {
     ensureActiveLayer();
-    const id = "b" + (boxCounter++);
+    const id = genId("b");
     boxes[id] = {
         id,
-        label: "Group " + boxCounter,
+        label: opts.label || ("Group " + boxCounter),
         x,
         y,
-        width: 260,
-        height: 200,
+        width: opts.width || 260,
+        height: opts.height || 200,
         nodes: [],
         layer: activeLayerId
     };
     return id;
+}
+
+function deleteBox(id) {
+    const b = boxes[id];
+    if (!b) return;
+    (b.nodes || []).forEach(nid => { if (nodes[nid]) nodes[nid].box = null; });
+    delete boxes[id];
+    selectedBoxes.delete(id);
+    if (selectedBoxId === id) selectedBoxId = null;
+}
+
+// ---------- BULK EDIT: delete / copy / paste / group ----------
+
+let clipboard = null;
+
+function deleteSelection() {
+    const nodeIds = [...selectedNodes];
+    const edgeIds = [...selectedEdges];
+    const boxIds = [...selectedBoxes];
+    if (!nodeIds.length && !edgeIds.length && !boxIds.length && !selectedNodeId && !selectedEdgeId && !selectedBoxId) return;
+    pushUndo();
+    (nodeIds.length ? nodeIds : (selectedNodeId ? [selectedNodeId] : [])).forEach(id => {
+        if (nodes[id] && !isLayerLocked(nodes[id].layer)) deleteNode(id);
+    });
+    const edgeSet = new Set(edgeIds.length ? edgeIds : (selectedEdgeId ? [selectedEdgeId] : []));
+    if (edgeSet.size) edges = edges.filter(ed => !edgeSet.has(ed.id) || isLayerLocked(ed.layer));
+    (boxIds.length ? boxIds : (selectedBoxId ? [selectedBoxId] : [])).forEach(id => {
+        if (boxes[id] && !isLayerLocked(boxes[id].layer)) deleteBox(id);
+    });
+    clearSelection();
+    render();
+}
+
+function copySelection() {
+    const ids = getSelectedNodeIds();
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    const copiedNodes = ids.map(id => JSON.parse(JSON.stringify(nodes[id]))).filter(Boolean);
+    const copiedEdges = edges.filter(e => idSet.has(e.source) && idSet.has(e.target))
+        .map(e => JSON.parse(JSON.stringify(e)));
+    clipboard = { nodes: copiedNodes, edges: copiedEdges };
+}
+
+function pasteClipboard(offset = 40) {
+    if (!clipboard || !clipboard.nodes.length) return;
+    pushUndo();
+    ensureActiveLayer();
+    const idMap = {};
+    clearSelection();
+    clipboard.nodes.forEach(n => {
+        const newId = genId("n");
+        idMap[n.id] = newId;
+        const copy = { ...n, id: newId, x: (n.x || 0) + offset, y: (n.y || 0) + offset, box: null, layer: activeLayerId };
+        nodes[newId] = normalizeNode(copy);
+        selectedNodes.add(newId);
+        selectedNodeId = newId;
+    });
+    clipboard.edges.forEach(e => {
+        const s = idMap[e.source], t = idMap[e.target];
+        if (!s || !t) return;
+        edges.push({ ...e, id: genId("e"), source: s, target: t, layer: activeLayerId });
+    });
+    render();
+}
+
+function duplicateSelection() {
+    copySelection();
+    pasteClipboard(30);
+}
+
+function groupSelection() {
+    const ids = getSelectedNodeIds().filter(id => nodes[id]);
+    if (ids.length < 1) return;
+    pushUndo();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    ids.forEach(id => {
+        const n = nodes[id];
+        const { halfWidth, halfHeight } = getNodeDimensions(n);
+        minX = Math.min(minX, n.x - halfWidth);
+        minY = Math.min(minY, n.y - halfHeight);
+        maxX = Math.max(maxX, n.x + halfWidth);
+        maxY = Math.max(maxY, n.y + halfHeight);
+    });
+    const pad = 36;
+    const id = createBoxAt(minX - pad, minY - pad - 16, { width: (maxX - minX) + pad * 2, height: (maxY - minY) + pad * 2 + 16 });
+    ids.forEach(nid => {
+        if (nodes[nid].box && boxes[nodes[nid].box]) {
+            boxes[nodes[nid].box].nodes = boxes[nodes[nid].box].nodes.filter(x => x !== nid);
+        }
+        nodes[nid].box = id;
+        boxes[id].nodes.push(nid);
+    });
+    selectBox(id);
+    render();
+}
+
+function ungroupSelection() {
+    const boxIds = selectedBoxes.size ? [...selectedBoxes] : (selectedBoxId ? [selectedBoxId] : []);
+    if (!boxIds.length) return;
+    pushUndo();
+    boxIds.forEach(id => { if (boxes[id] && !isLayerLocked(boxes[id].layer)) deleteBox(id); });
+    clearSelection();
+    render();
+}
+
+function selectAll() {
+    clearSelection();
+    Object.values(nodes).forEach(n => { if (isNodeVisible(n) && !isLayerLocked(n.layer)) { selectedNodes.add(n.id); selectedNodeId = n.id; } });
+    render();
 }
 
 // Box membership: assign node to box if inside; remove from previous if needed
@@ -2188,15 +2771,41 @@ document.getElementById("apply-layout").addEventListener("click", () => {
 
     pushUndo();
 
-    Layout.apply(type, {
-        nodes,
-        edges,
-        boxes,
-        view
-    }, layoutSettings.options[type] || {});
+    // capture positions for an animated transition
+    const before = {};
+    Object.keys(nodes).forEach(id => { before[id] = { x: nodes[id].x, y: nodes[id].y }; });
 
-    render();
+    // layout-on-selection: if 2+ nodes selected, only arrange those
+    const selIds = getSelectedNodeIds().filter(id => nodes[id]);
+    if (selIds.length >= 2) {
+        const subNodes = {};
+        selIds.forEach(id => { subNodes[id] = nodes[id]; });
+        Layout.apply(type, { nodes: subNodes, edges, boxes: {}, view }, layoutSettings.options[type] || {});
+    } else {
+        Layout.apply(type, { nodes, edges, boxes, view }, layoutSettings.options[type] || {});
+    }
+
+    animateLayout(before);
 });
+
+// Animate nodes from their previous positions to the freshly-computed layout.
+function animateLayout(before, dur = 420) {
+    const target = {};
+    Object.keys(nodes).forEach(id => { target[id] = { x: nodes[id].x, y: nodes[id].y }; });
+    let t0 = null;
+    const step = now => {
+        if (t0 === null) t0 = now;
+        const k = Math.min(1, (now - t0) / dur);
+        const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2; // easeInOutQuad
+        Object.keys(target).forEach(id => {
+            const n = nodes[id], b = before[id];
+            if (n && b) { n.x = b.x + (target[id].x - b.x) * e; n.y = b.y + (target[id].y - b.y) * e; }
+        });
+        renderNow();
+        if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+}
 
 document.getElementById("layout-select").addEventListener("change", e => {
     layoutSettings.selectedLayout = e.target.value;
@@ -2354,7 +2963,295 @@ document.addEventListener("keydown", e => {
     }
 });
 
+// Global editing shortcuts (delete, copy/paste/duplicate, select-all, undo/redo, group, escape)
+document.addEventListener("keydown", e => {
+    const tag = e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
+
+    if (e.key === "Delete" || e.key === "Backspace") {
+        if (selectedNodes.size || selectedEdges.size || selectedBoxes.size || selectedNodeId || selectedEdgeId || selectedBoxId) {
+            e.preventDefault();
+            deleteSelection();
+        }
+        return;
+    }
+    if (e.key === "Escape") {
+        if (marqueeActive) { marqueeActive = false; marqueeRect = null; }
+        hideContextMenu();
+        clearSelection();
+        render();
+        return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+        const k = e.key.toLowerCase();
+        if (e.shiftKey && k === "z") { e.preventDefault(); document.getElementById("redo-btn").click(); return; }
+        switch (k) {
+            case "z": e.preventDefault(); document.getElementById("undo-btn").click(); return;
+            case "y": e.preventDefault(); document.getElementById("redo-btn").click(); return;
+            case "c": e.preventDefault(); copySelection(); return;
+            case "v": e.preventDefault(); pasteClipboard(); return;
+            case "d": e.preventDefault(); duplicateSelection(); return;
+            case "a": e.preventDefault(); selectAll(); return;
+            case "g": e.preventDefault(); if (e.shiftKey) ungroupSelection(); else groupSelection(); return;
+            default: break;
+        }
+    }
+});
+
+// ---------- PANEL HELPER ----------
+
+function openPanel(panelId) {
+    const p = document.getElementById(panelId);
+    if (p) { p.classList.add("open"); p.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+}
+
+// ---------- TRANSFORMS ----------
+
+let availableTransforms = []; // [{id,name,inputTypes,description}]
+
+async function loadTransforms() {
+    try {
+        const res = await fetch("/api/transforms");
+        if (!res.ok) return;
+        const data = await res.json();
+        availableTransforms = Array.isArray(data) ? data : (data.transforms || []);
+        if (typeof renderTransformsHub === "function") renderTransformsHub();
+    } catch (e) { /* server offline → transforms simply unavailable */ }
+}
+
+function getApplicableTransforms(node) {
+    const type = node.entityType || "generic";
+    return availableTransforms.filter(t =>
+        !t.inputTypes || !t.inputTypes.length || t.inputTypes.includes(type) || t.inputTypes.includes("*"));
+}
+
+async function runTransformOnNode(node, transformId, params = {}) {
+    try {
+        const res = await fetch("/api/transform", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                transformId,
+                entity: { type: node.entityType || "generic", value: node.value || node.label || "", properties: node.properties || {} },
+                params
+            })
+        });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert("Transform failed: " + (err.error || ("HTTP " + res.status)));
+            return;
+        }
+        const data = await res.json();
+        mergeTransformResults(node, transformId, data);
+    } catch (e) {
+        alert("Transform failed — is the server running?");
+    }
+}
+
+function entityKey(type, value) {
+    return (type || "generic") + "::" + String(value || "").trim().toLowerCase();
+}
+
+// Additively merge transform results into the graph, de-duplicating entities by
+// type+value and links by endpoint pair, stamping provenance.
+function mergeTransformResults(sourceNode, transformId, data) {
+    const ents = (data && data.entities) || [];
+    const links = (data && data.links) || [];
+    if (!ents.length) { return; }
+    pushUndo();
+    const existingByKey = {};
+    Object.keys(nodes).forEach(id => {
+        const n = nodes[id];
+        existingByKey[entityKey(n.entityType, n.value || n.label)] = id;
+    });
+    const n = ents.length;
+    ents.forEach((ent, i) => {
+        const key = entityKey(ent.type, ent.value);
+        let targetId = existingByKey[key];
+        if (!targetId) {
+            const angle = (i / n) * Math.PI * 2;
+            const r = 160;
+            targetId = createNodeAt(sourceNode.x + Math.cos(angle) * r, sourceNode.y + Math.sin(angle) * r, {
+                entityType: ent.type, value: ent.value, label: ent.value, properties: ent.properties || {}
+            });
+            nodes[targetId].provenance = { source: "transform:" + transformId, createdAt: Date.now() };
+            existingByKey[key] = targetId;
+        }
+        const link = links[i] || links[0] || {};
+        const exists = edges.some(e => (e.source === sourceNode.id && e.target === targetId));
+        if (!exists && targetId !== sourceNode.id) {
+            const eid = createEdge(sourceNode.id, targetId);
+            const edge = edges.find(e => e.id === eid);
+            if (edge) {
+                edge.label = link.label || transformId;
+                edge.directed = link.directed !== false;
+                edge.provenance = { source: "transform:" + transformId, createdAt: Date.now() };
+            }
+        }
+    });
+    render();
+}
+
+// ---------- CONTEXT MENU ----------
+
+let _contextMenuEl = null;
+function hideContextMenu() {
+    if (_contextMenuEl) { _contextMenuEl.remove(); _contextMenuEl = null; }
+}
+function buildMenuInto(menu, items) {
+    items.forEach(item => {
+        if (item.separator) {
+            const d = document.createElement("div");
+            d.className = "context-sep";
+            menu.appendChild(d);
+            return;
+        }
+        const el = document.createElement("div");
+        el.className = "context-item" + (item.disabled ? " disabled" : "") + (item.submenu ? " has-sub" : "");
+        const span = document.createElement("span");
+        span.textContent = item.label;
+        el.appendChild(span);
+        if (item.submenu && item.submenu.length) {
+            const sub = document.createElement("div");
+            sub.className = "context-submenu";
+            buildMenuInto(sub, item.submenu);
+            el.appendChild(sub);
+        } else if (!item.disabled && item.action) {
+            el.addEventListener("click", ev => { ev.stopPropagation(); hideContextMenu(); item.action(); });
+        }
+        menu.appendChild(el);
+    });
+}
+function showContextMenu(clientX, clientY, items) {
+    hideContextMenu();
+    const menu = document.createElement("div");
+    menu.className = "context-menu";
+    buildMenuInto(menu, items);
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = Math.min(clientX, window.innerWidth - rect.width - 8) + "px";
+    menu.style.top = Math.min(clientY, window.innerHeight - rect.height - 8) + "px";
+    _contextMenuEl = menu;
+}
+document.addEventListener("click", () => hideContextMenu());
+document.addEventListener("contextmenu", e => {
+    // hide our menu for right-clicks outside the canvas
+    if (!e.target.closest || !e.target.closest("#graphCanvas")) hideContextMenu();
+});
+
+svg.addEventListener("contextmenu", e => {
+    e.preventDefault();
+    const owner = e.target.closest ? e.target.closest("[data-node-id],[data-edge-id],[data-box-id],[data-resize-box-id]") : null;
+    const ds = (owner && owner.dataset) || e.target.dataset || {};
+    const nodeId = ds.nodeId;
+    const edgeId = ds.edgeId;
+    const boxId = ds.boxId || ds.resizeBoxId;
+    const pos = screenToWorld(e.clientX, e.clientY);
+    let items;
+
+    if (nodeId && nodes[nodeId]) {
+        if (!isNodeSelected(nodeId)) selectNode(nodeId);
+        render();
+        const n = nodes[nodeId];
+        const tItems = getApplicableTransforms(n).map(t => ({ label: t.name, action: () => runTransformOnNode(n, t.id) }));
+        items = [
+            { label: "Run transform", submenu: tItems.length ? tItems : [{ label: "(no transforms for this type)", disabled: true }] },
+            { separator: true },
+            { label: "Edit properties", action: () => openPanel("panel-selection") },
+            { label: n.pinned ? "Unpin position" : "Pin position", action: () => { pushUndo(); getSelectedNodeIds().forEach(id => { if (nodes[id]) nodes[id].pinned = !n.pinned; }); render(); } },
+            { label: "Copy", action: copySelection },
+            { label: "Duplicate", action: duplicateSelection },
+            { label: "Group selection", action: groupSelection },
+            { separator: true },
+            { label: "Delete", action: deleteSelection }
+        ];
+    } else if (edgeId) {
+        const edge = edges.find(x => x.id === edgeId);
+        selectEdge(edgeId); render();
+        items = [
+            { label: "Edit edge", action: () => openPanel("panel-selection") },
+            { label: edge && edge.directed ? "Make undirected" : "Make directed", action: () => { if (edge) { pushUndo(); edge.directed = !edge.directed; render(); } } },
+            { label: "Reverse direction", action: () => { if (edge) { pushUndo(); const s = edge.source; edge.source = edge.target; edge.target = s; render(); } } },
+            { separator: true },
+            { label: "Delete edge", action: () => { pushUndo(); edges = edges.filter(x => x.id !== edgeId); clearSelection(); render(); } }
+        ];
+    } else if (boxId && boxes[boxId]) {
+        selectBox(boxId); render();
+        items = [
+            { label: "Rename box", action: () => openPanel("panel-selection") },
+            { label: "Ungroup", action: ungroupSelection },
+            { label: "Delete box", action: () => { pushUndo(); deleteBox(boxId); render(); } }
+        ];
+    } else {
+        items = [
+            { label: "Add node here", action: () => { pushUndo(); const id = createNodeAt(pos.x, pos.y); selectNode(id); render(); } },
+            { label: "Paste", action: () => pasteClipboard(), disabled: !clipboard },
+            { label: "Select all", action: selectAll },
+            { separator: true },
+            { label: "Fit to content", action: () => fitToContent() }
+        ];
+    }
+    showContextMenu(e.clientX, e.clientY, items);
+});
+
 // ---------- RENDER ----------
+
+function getThemeTokens() {
+    const c = getComputedStyle(document.body);
+    const get = (name, fallback) => (c.getPropertyValue(name) || "").trim() || fallback;
+    return {
+        nodeStroke: get("--node-stroke", "#1f2937"),
+        nodeLabel: get("--node-label", "#0f172a"),
+        boxFill: get("--box-fill", "#fffce8"),
+        boxStroke: get("--box-stroke", "#d4b66a"),
+        boxStrokeActive: get("--box-stroke-active", "#e09020"),
+        boxLabel: get("--box-label", "#9c7c30"),
+        boxHandle: get("--box-handle", "#d4b66a"),
+        boxHandleStroke: get("--box-handle-stroke", "#9c7c30"),
+        edgeDefault: get("--edge-default", "#888888"),
+        edgeLabel: get("--edge-label", "#444444"),
+        edgeDerived: get("--edge-derived", "#7c5cd6"),
+        minimapNode: get("--minimap-node", "#666666"),
+        minimapEdge: get("--minimap-edge", "#bbbbbb"),
+        minimapBg: get("--minimap-bg", "#ffffff"),
+        minimapBorder: get("--minimap-border", "#cccccc")
+    };
+}
+
+// Data-driven visual encoding palette + helpers (state object `encoding` lives in STATE).
+const COMMUNITY_PALETTE = [
+    "#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f",
+    "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac"
+];
+function communityColor(idx) {
+    return COMMUNITY_PALETTE[((idx % COMMUNITY_PALETTE.length) + COMMUNITY_PALETTE.length) % COMMUNITY_PALETTE.length];
+}
+function rampColor(t) {
+    t = Math.max(0, Math.min(1, t));
+    // blue (low) → yellow → red (high)
+    const stops = [[70, 130, 180], [240, 200, 70], [225, 45, 57]];
+    const seg = t < 0.5 ? 0 : 1;
+    const local = t < 0.5 ? t / 0.5 : (t - 0.5) / 0.5;
+    const a = stops[seg], b = stops[seg + 1];
+    const ch = i => Math.round(a[i] + (b[i] - a[i]) * local);
+    return `#${[ch(0), ch(1), ch(2)].map(v => v.toString(16).padStart(2, "0")).join("")}`;
+}
+function isMetricMode(m) {
+    return m === "degree" || m === "betweenness" || m === "closeness" || m === "pagerank";
+}
+function getNodeFill(n) {
+    const m = encoding.mode;
+    if (m === "community" && n.community != null) return communityColor(n.community);
+    if (isMetricMode(m) && n.metrics && Number.isFinite(n.metrics[m]) && encoding.max > encoding.min) {
+        return rampColor((n.metrics[m] - encoding.min) / (encoding.max - encoding.min));
+    }
+    if (m !== "type" && n.color) return n.color;
+    if (typeof getEntityType === "function") {
+        const et = getEntityType(n.entityType);
+        if (et && et.color) return et.color;
+    }
+    return n.color || getShapeDefaults(n.shape || "circle").color;
+}
 
 function getEdgePointsForRouting(src, tgt) {
     if (layoutSettings.edgeRouting === "orthogonal") {
@@ -2392,9 +3289,70 @@ function getEdgeLabelAnchor(points) {
     return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
 }
 
+// Point on a node's border in the direction (dirx,diry) from its center.
+function nodeBorderPoint(node, dirx, diry) {
+    const { halfWidth, halfHeight, radius } = getNodeDimensions(node);
+    const shape = node.shape || "circle";
+    const len = Math.hypot(dirx, diry) || 1;
+    const ux = dirx / len, uy = diry / len;
+    if (shape === "circle") {
+        return { x: node.x + ux * radius, y: node.y + uy * radius };
+    }
+    // rect / rounded / cylinder / swimlane / diamond → AABB approximation
+    const sx = ux !== 0 ? halfWidth / Math.abs(ux) : Infinity;
+    const sy = uy !== 0 ? halfHeight / Math.abs(uy) : Infinity;
+    const s = Math.min(sx, sy);
+    return { x: node.x + ux * s, y: node.y + uy * s };
+}
+
+// Clip an edge polyline so its endpoints sit on the node borders, not centers.
+function clipEdgeToBorders(points, src, tgt) {
+    if (!points || points.length < 2) return points;
+    if (src === tgt) return points;
+    const p = points.map(pt => ({ ...pt }));
+    const next = p[1];
+    const prev = p[p.length - 2];
+    p[0] = nodeBorderPoint(src, next.x - src.x, next.y - src.y);
+    p[p.length - 1] = nodeBorderPoint(tgt, prev.x - tgt.x, prev.y - tgt.y);
+    return p;
+}
+
+// rAF-batched render: many handlers call render() per frame (e.g. drag);
+// coalesce them into one actual DOM rebuild per animation frame.
+let _renderQueued = false;
 function render() {
+    if (_renderQueued) return;
+    _renderQueued = true;
+    requestAnimationFrame(() => { _renderQueued = false; renderNow(); });
+}
+// Force a synchronous render (used before reading the live SVG, e.g. export).
+function flushRender() {
+    _renderQueued = false;
+    renderNow();
+}
+
+function renderNow() {
     clearSelectionIfLayerUnavailable();
+
+    // Alternate workspace views (canvas / bubble / map / entity list).
+    // NOTE: toggle the .hidden class (it uses !important) rather than style.display.
+    const canvasEl = document.getElementById("graphCanvasGl");
+    const altEl = document.getElementById("alt-view");
+    const showEl = (el, show) => { if (el) el.classList.toggle("hidden", !show); };
+    if (viewMode === "list") {
+        svg.style.display = "none"; showEl(canvasEl, false); showEl(altEl, true);
+        renderListView(altEl); finishRenderPanels(); return;
+    }
+    if (viewMode === "canvas") {
+        svg.style.display = "none"; showEl(altEl, false); showEl(canvasEl, true);
+        renderCanvasView(canvasEl); finishRenderPanels(); return;
+    }
+    showEl(canvasEl, false); showEl(altEl, false); svg.style.display = "block";
+    if (viewMode === "bubble") { renderBubbleView(); finishRenderPanels(); return; }
+    if (viewMode === "map") { renderMapView(); finishRenderPanels(); return; }
+
     svg.innerHTML = "";
+    const theme = getThemeTokens();
 
     const viewport = document.createElementNS(NS, "g");
     viewport.setAttribute("id", "viewport");
@@ -2431,9 +3389,10 @@ function render() {
         rect.setAttribute("width", b.width);
         rect.setAttribute("height", b.height);
         rect.setAttribute("rx", 8);
-        rect.setAttribute("fill", "#fffce8");
-        rect.setAttribute("stroke", selectedBoxId === b.id ? "#e09020" : "#d4b66a");
-        rect.setAttribute("stroke-width", selectedBoxId === b.id ? "3" : "2");
+        rect.setAttribute("fill", theme.boxFill);
+        rect.setAttribute("fill-opacity", "0.85");
+        rect.setAttribute("stroke", isBoxSelected(b.id) ? theme.boxStrokeActive : theme.boxStroke);
+        rect.setAttribute("stroke-width", isBoxSelected(b.id) ? "3" : "2");
         rect.dataset.boxId = b.id;
         g.appendChild(rect);
 
@@ -2442,12 +3401,12 @@ function render() {
         label.setAttribute("x", b.x + 10);
         label.setAttribute("y", b.y + 20);
         label.setAttribute("font-size", "14");
-        label.setAttribute("fill", "#9c7c30");
+        label.setAttribute("fill", theme.boxLabel);
         label.dataset.boxId = b.id;
         g.appendChild(label);
 
-        // Resize handles (corners)
-        const corners = [
+        // Resize handles (corners) — omitted in export output
+        const corners = exporting ? [] : [
             { name: "nw", cx: b.x, cy: b.y },
             { name: "ne", cx: b.x + b.width, cy: b.y },
             { name: "sw", cx: b.x, cy: b.y + b.height },
@@ -2460,9 +3419,10 @@ function render() {
             h.setAttribute("y", c.cy - 6);
             h.setAttribute("width", 12);
             h.setAttribute("height", 12);
-            h.setAttribute("fill", "#d4b66a");
-            h.setAttribute("stroke", "#9c7c30");
+            h.setAttribute("fill", theme.boxHandle);
+            h.setAttribute("stroke", theme.boxHandleStroke);
             h.setAttribute("cursor", "nwse-resize");
+            h.setAttribute("class", "box-handle");
             h.dataset.resizeBoxId = b.id;
             h.dataset.resizeCorner = c.name;
             g.appendChild(h);
@@ -2480,13 +3440,27 @@ function render() {
         if (!src || !tgt) return;
         if (!visibleNodes[edge.source] || !visibleNodes[edge.target]) return;
 
-        const points = getEdgePointsForRouting(src, tgt);
+        const rawPoints = getEdgePointsForRouting(src, tgt);
+        // Clip endpoints to node borders so arrowheads aren't hidden under fills.
+        const points = clipEdgeToBorders(rawPoints, src, tgt);
         const onPath = pathHighlights.edges.has(edge.id);
-        const strokeColor = onPath ? "#ff2d55" : (edge.id === selectedEdgeId ? "#ff6600" : (edge.color || "#888"));
-        const strokeWidth = (edge.width || 2) + (onPath ? 1.5 : 0);
+        const derived = edge.provenance && typeof edge.provenance.source === "string" && edge.provenance.source.startsWith("transform");
+        const baseColor = edge.color || (derived ? theme.edgeDerived : theme.edgeDefault);
+        const strokeColor = onPath ? "#ff2d55" : (isEdgeSelected(edge.id) ? "#ff6600" : baseColor);
+        const strokeWidth = (edge.width || 2) + (onPath ? 1.5 : 0) + (isEdgeSelected(edge.id) ? 1 : 0);
+        const selfLoop = edge.source === edge.target;
         let edgeElement;
 
-        if (points.length > 2) {
+        if (selfLoop) {
+            // self-loop: small arc above the node
+            const { halfWidth, halfHeight } = getNodeDimensions(src);
+            const r = Math.max(halfWidth, halfHeight);
+            const path = document.createElementNS(NS, "path");
+            const cx = src.x, cy = src.y - r;
+            path.setAttribute("d", `M ${src.x - r * 0.5} ${src.y - r * 0.6} C ${cx - r} ${cy - r}, ${cx + r} ${cy - r}, ${src.x + r * 0.5} ${src.y - r * 0.6}`);
+            path.setAttribute("fill", "none");
+            edgeElement = path;
+        } else if (points.length > 2) {
             const poly = document.createElementNS(NS, "polyline");
             poly.setAttribute("points", points.map(p => `${p.x},${p.y}`).join(" "));
             poly.setAttribute("fill", "none");
@@ -2502,11 +3476,22 @@ function render() {
 
         edgeElement.setAttribute("stroke", strokeColor);
         edgeElement.setAttribute("stroke-width", strokeWidth);
+        edgeElement.setAttribute("fill", "none");
         edgeElement.dataset.edgeId = edge.id;
         edgeElement.setAttribute("pointer-events", "stroke");
+
+        // transparent fat hit-area so thin edges are easily clickable
+        const hit = edgeElement.cloneNode(false);
+        hit.setAttribute("stroke", "transparent");
+        hit.setAttribute("stroke-width", Math.max(12, strokeWidth + 8));
+        hit.setAttribute("fill", "none");
+        hit.dataset.edgeId = edge.id;
+        hit.setAttribute("pointer-events", "stroke");
+        viewport.appendChild(hit);
+        edgeElement.setAttribute("pointer-events", "none");
         viewport.appendChild(edgeElement);
 
-        if (edge.directed && points.length >= 2) {
+        if (edge.directed && !selfLoop && points.length >= 2) {
             const tail = points[points.length - 2];
             const head = points[points.length - 1];
             const dx = head.x - tail.x;
@@ -2535,15 +3520,14 @@ function render() {
             text.setAttribute("y", mid.y - 6);
             text.setAttribute("font-size", "11");
             text.setAttribute("text-anchor", "middle");
-            text.setAttribute("fill", "#444");
+            text.setAttribute("fill", theme.edgeLabel);
             text.dataset.edgeId = edge.id;
             viewport.appendChild(text);
         }
     });
 
     // nodes
-    const computed = getComputedStyle(document.body);
-    const fallbackStroke = computed.getPropertyValue("--node-stroke")?.trim() || "#1f2937";
+    const fallbackStroke = theme.nodeStroke;
 
     Object.values(nodes).forEach(n => {
         if (!visibleNodes[n.id]) return;
@@ -2551,12 +3535,14 @@ function render() {
         const shapeType = n.shape || "circle";
         const { width, height, halfWidth, halfHeight, radius } = getNodeDimensions(n);
         const onPath = pathHighlights.nodes.has(n.id);
-        const fill = n.color || getShapeDefaults(shapeType).color;
+        const fill = getNodeFill(n);
         const baseStroke = n.stroke || fallbackStroke;
-        const stroke = onPath ? "#ff2d55" : (n.id === selectedNodeId ? "#ff9900" : baseStroke);
-        const strokeWidth = onPath ? "4" : (n.id === selectedNodeId ? "3" : "1");
+        const selectedNode = isNodeSelected(n.id);
+        const stroke = onPath ? "#ff2d55" : (selectedNode ? "#ff9900" : baseStroke);
+        const strokeWidth = onPath ? "4" : (selectedNode ? "3" : "1");
         const nodeGroup = document.createElementNS(NS, "g");
         nodeGroup.dataset.nodeId = n.id;
+        if (n.pinned) nodeGroup.dataset.pinned = "1";
 
         if (shapeType === "circle") {
             const circle = document.createElementNS(NS, "circle");
@@ -2659,15 +3645,32 @@ function render() {
             }
         }
 
+        // per-type icon glyph centered in the node
+        const etype = (typeof getEntityType === "function") ? getEntityType(n.entityType) : null;
+        if (etype && etype.icon) {
+            const icon = document.createElementNS(NS, "text");
+            icon.textContent = etype.icon;
+            icon.setAttribute("x", n.x);
+            icon.setAttribute("y", n.y);
+            icon.setAttribute("text-anchor", "middle");
+            icon.setAttribute("dominant-baseline", "central");
+            icon.setAttribute("font-size", Math.max(11, Math.min(Math.min(halfWidth, halfHeight) * 1.1, 22)));
+            icon.setAttribute("pointer-events", "none");
+            icon.dataset.nodeId = n.id;
+            nodeGroup.appendChild(icon);
+        }
+
         viewport.appendChild(nodeGroup);
 
+        // label with a readable halo so it stays legible over edges/nodes
         const label = document.createElementNS(NS, "text");
-        label.textContent = n.label || n.id;
+        label.textContent = n.label || n.value || n.id;
         label.setAttribute("x", n.x);
         label.setAttribute("y", n.y + halfHeight + 16);
         label.setAttribute("font-size", "12");
         label.setAttribute("text-anchor", "middle");
         label.setAttribute("class", "node-label");
+        label.setAttribute("paint-order", "stroke");
         label.dataset.nodeId = n.id;
         viewport.appendChild(label);
     });
@@ -2699,12 +3702,32 @@ function render() {
         viewport.appendChild(guideLayer);
     }
 
+    // marquee rectangle
+    if (marqueeActive && marqueeRect) {
+        const m = document.createElementNS(NS, "rect");
+        m.setAttribute("x", marqueeRect.x);
+        m.setAttribute("y", marqueeRect.y);
+        m.setAttribute("width", marqueeRect.w);
+        m.setAttribute("height", marqueeRect.h);
+        m.setAttribute("class", "marquee-rect");
+        m.setAttribute("pointer-events", "none");
+        viewport.appendChild(m);
+    }
+
+    finishRenderPanels();
+}
+
+// Shared render tail: refresh side panels + minimap + autosave. Called by the
+// main SVG renderer and by every alternate view (canvas/bubble/map/list).
+function finishRenderPanels() {
     updateNodeEditor();
     updateEdgeEditor();
     updateBoxEditor();
     renderLayersPanel();
     renderMinimap();
-    autosave();
+    if (typeof renderLegend === "function") renderLegend();
+    if (typeof renderTransformsHub === "function") renderTransformsHub();
+    scheduleSave();
 }
 
 // ---------- MINIMAP ----------
@@ -2712,6 +3735,7 @@ function render() {
 function renderMinimap() {
     if (!minimap) return;
     minimap.innerHTML = "";
+    const theme = getThemeTokens();
 
     const mmWidth = minimap.clientWidth || 180;
     const mmHeight = minimap.clientHeight || 120;
@@ -2721,8 +3745,8 @@ function renderMinimap() {
     bg.setAttribute("y", 0);
     bg.setAttribute("width", mmWidth);
     bg.setAttribute("height", mmHeight);
-    bg.setAttribute("fill", "#ffffff");
-    bg.setAttribute("stroke", "#ccc");
+    bg.setAttribute("fill", theme.minimapBg);
+    bg.setAttribute("stroke", theme.minimapBorder);
     minimap.appendChild(bg);
 
     // compute world extents from nodes + boxes
@@ -2779,7 +3803,7 @@ function renderMinimap() {
         line.setAttribute("y1", p1.y);
         line.setAttribute("x2", p2.x);
         line.setAttribute("y2", p2.y);
-        line.setAttribute("stroke", "#bbb");
+        line.setAttribute("stroke", theme.minimapEdge);
         line.setAttribute("stroke-width", "1");
         minimap.appendChild(line);
     });
@@ -2794,8 +3818,8 @@ function renderMinimap() {
         rect.setAttribute("y", tl.y);
         rect.setAttribute("width", Math.max(4, br.x - tl.x));
         rect.setAttribute("height", Math.max(4, br.y - tl.y));
-        rect.setAttribute("fill", "#fffce8");
-        rect.setAttribute("stroke", "#d4b66a");
+        rect.setAttribute("fill", theme.boxFill);
+        rect.setAttribute("stroke", theme.boxStroke);
         rect.setAttribute("stroke-width", "1");
         minimap.appendChild(rect);
     });
@@ -2808,7 +3832,7 @@ function renderMinimap() {
         c.setAttribute("cx", p.x);
         c.setAttribute("cy", p.y);
         c.setAttribute("r", 2.5);
-        c.setAttribute("fill", "#666");
+        c.setAttribute("fill", getNodeFill(n));
         minimap.appendChild(c);
     });
 
@@ -2876,6 +3900,1128 @@ if (minimap) {
     });
 }
 
+// ==================================================================
+//                  NEW FEATURE WIRING
+// ==================================================================
+
+// ---------- ENTITY PALETTE ----------
+
+function buildEntityPalette() {
+    const wrap = document.getElementById("entity-palette");
+    if (!wrap || typeof listEntityCategories !== "function") return;
+    const q = (document.getElementById("palette-search")?.value || "").toLowerCase();
+    const cats = listEntityCategories();
+    wrap.innerHTML = "";
+    Object.keys(cats).forEach(cat => {
+        const types = cats[cat].filter(t => !q || t.name.toLowerCase().includes(q) || t.id.toLowerCase().includes(q));
+        if (!types.length) return;
+        const title = document.createElement("div");
+        title.className = "entity-category-title";
+        title.textContent = cat;
+        wrap.appendChild(title);
+        const grid = document.createElement("div");
+        grid.className = "entity-palette";
+        types.forEach(t => {
+            const item = document.createElement("div");
+            item.className = "entity-item";
+            item.draggable = true;
+            item.dataset.entityType = t.id;
+            item.tabIndex = 0;
+            item.title = "Drag onto canvas, or click to add at center";
+            const glyph = document.createElement("span");
+            if (t.icon) { glyph.className = "entity-glyph"; glyph.textContent = t.icon; }
+            else { glyph.className = "entity-dot"; glyph.style.background = t.color; }
+            const name = document.createElement("span");
+            name.textContent = t.name;
+            item.appendChild(glyph);
+            item.appendChild(name);
+            item.addEventListener("dragstart", e => {
+                e.dataTransfer.setData("text/plain", t.id);
+                e.dataTransfer.effectAllowed = "copy";
+            });
+            const addAtCenter = () => {
+                if (isLayerLocked(activeLayerId)) { alert("Active layer is locked."); return; }
+                pushUndo();
+                const rect = svg.getBoundingClientRect();
+                const c = screenToWorld(rect.left + svg.clientWidth / 2, rect.top + svg.clientHeight / 2);
+                const id = createNodeAt(c.x, c.y, { entityType: t.id });
+                selectNode(id);
+                render();
+            };
+            item.addEventListener("click", addAtCenter);
+            item.addEventListener("keydown", e => { if (e.key === "Enter") addAtCenter(); });
+            grid.appendChild(item);
+        });
+        wrap.appendChild(grid);
+    });
+}
+
+function populateFilterTypes() {
+    const sel = document.getElementById("filter-type");
+    if (!sel || typeof listEntityTypes !== "function") return;
+    const present = new Set(Object.values(nodes).map(n => n.entityType || "generic"));
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">All types</option>';
+    listEntityTypes().filter(t => present.has(t.id)).forEach(t => {
+        const o = document.createElement("option");
+        o.value = t.id; o.textContent = t.name;
+        sel.appendChild(o);
+    });
+    sel.value = cur;
+}
+
+// ---------- TYPE LEGEND ----------
+
+function renderLegend() {
+    const el = document.getElementById("canvas-legend");
+    if (!el) return;
+    const showLegend = document.getElementById("toggle-legend")?.checked;
+    if (!showLegend) { el.classList.add("hidden"); return; }
+    const present = {};
+    Object.values(nodes).forEach(n => {
+        if (!isNodeVisible(n)) return;
+        const t = (typeof getEntityType === "function") ? getEntityType(n.entityType) : null;
+        if (t && t.id !== "generic" && t.category !== "Shapes") present[t.id] = t;
+    });
+    const types = Object.values(present);
+    if (!types.length) { el.classList.add("hidden"); return; }
+    el.classList.remove("hidden");
+    el.innerHTML = '<div class="legend-title">Entity types</div>';
+    types.forEach(t => {
+        const chip = document.createElement("div");
+        chip.className = "legend-chip";
+        chip.innerHTML = `<span class="legend-swatch" style="background:${t.color}"></span>${t.icon || ""} ${t.name}`;
+        el.appendChild(chip);
+    });
+}
+
+// ---------- DATA-DRIVEN ENCODING ----------
+
+function metricRange(metric) {
+    let min = Infinity, max = -Infinity;
+    Object.values(nodes).forEach(n => {
+        const v = n.metrics && n.metrics[metric];
+        if (Number.isFinite(v)) { min = Math.min(min, v); max = Math.max(max, v); }
+    });
+    if (min === Infinity) return { min: 0, max: 1 };
+    return { min, max };
+}
+
+async function applyEncoding() {
+    const mode = document.getElementById("encoding-mode")?.value || "none";
+    const sizeBy = document.getElementById("encoding-size")?.value || "none";
+    const needsMetrics = isMetricMode(mode) || isMetricMode(sizeBy) || mode === "community";
+    if (needsMetrics && !Object.values(nodes).some(n => n.metrics)) {
+        await runCentrality();
+    }
+    encoding.mode = mode;
+    encoding.sizeByMetric = sizeBy;
+    if (isMetricMode(mode)) { const r = metricRange(mode); encoding.min = r.min; encoding.max = r.max; }
+    if (isMetricMode(sizeBy)) { const r = metricRange(sizeBy); encoding.sizeMin = r.min; encoding.sizeMax = r.max; }
+    render();
+}
+
+// ---------- CENTRALITY & COMMUNITIES (client) ----------
+
+function undirectedAdj() {
+    const adj = {};
+    Object.keys(nodes).forEach(id => { adj[id] = new Set(); });
+    edges.forEach(e => {
+        if (!nodes[e.source] || !nodes[e.target] || e.source === e.target) return;
+        adj[e.source].add(e.target);
+        adj[e.target].add(e.source);
+    });
+    const out = {};
+    Object.keys(adj).forEach(id => { out[id] = [...adj[id]]; });
+    return out;
+}
+
+function computeCentralityClient() {
+    const ids = Object.keys(nodes);
+    const metrics = {};
+    ids.forEach(id => { metrics[id] = { degree: 0, inDegree: 0, outDegree: 0, betweenness: 0, closeness: 0, pagerank: 0 }; });
+    // degrees
+    edges.forEach(e => {
+        if (!metrics[e.source] || !metrics[e.target]) return;
+        metrics[e.source].outDegree++; metrics[e.source].degree++;
+        metrics[e.target].inDegree++; metrics[e.target].degree++;
+    });
+    const adj = undirectedAdj();
+    // Brandes betweenness + BFS closeness (unweighted, undirected)
+    ids.forEach(s => {
+        const stack = [];
+        const pred = {}; const sigma = {}; const dist = {};
+        ids.forEach(t => { pred[t] = []; sigma[t] = 0; dist[t] = -1; });
+        sigma[s] = 1; dist[s] = 0;
+        const queue = [s];
+        let distSum = 0, reach = 0;
+        while (queue.length) {
+            const v = queue.shift();
+            stack.push(v);
+            adj[v].forEach(w => {
+                if (dist[w] < 0) { dist[w] = dist[v] + 1; queue.push(w); }
+                if (dist[w] === dist[v] + 1) { sigma[w] += sigma[v]; pred[w].push(v); }
+            });
+        }
+        ids.forEach(t => { if (t !== s && dist[t] > 0) { distSum += dist[t]; reach++; } });
+        if (distSum > 0) {
+            // Wasserman-Faust normalization for disconnected graphs
+            metrics[s].closeness = (reach / (ids.length - 1 || 1)) * (reach / distSum);
+        }
+        const delta = {};
+        ids.forEach(t => { delta[t] = 0; });
+        while (stack.length) {
+            const w = stack.pop();
+            pred[w].forEach(v => { delta[v] += (sigma[v] / sigma[w]) * (1 + delta[w]); });
+            if (w !== s) metrics[w].betweenness += delta[w];
+        }
+    });
+    // betweenness undirected: divide by 2
+    ids.forEach(id => { metrics[id].betweenness /= 2; });
+    // PageRank (power iteration over directed out-links)
+    const outAdj = {}; ids.forEach(id => { outAdj[id] = []; });
+    edges.forEach(e => { if (outAdj[e.source] && nodes[e.target]) outAdj[e.source].push(e.target); });
+    const N = ids.length || 1;
+    let pr = {}; ids.forEach(id => { pr[id] = 1 / N; });
+    const d = 0.85;
+    for (let iter = 0; iter < 40; iter++) {
+        const next = {}; let dangling = 0;
+        ids.forEach(id => { next[id] = (1 - d) / N; });
+        ids.forEach(id => { if (outAdj[id].length === 0) dangling += pr[id]; });
+        ids.forEach(id => {
+            const share = outAdj[id].length ? pr[id] / outAdj[id].length : 0;
+            outAdj[id].forEach(t => { next[t] += d * share; });
+        });
+        ids.forEach(id => { next[id] += d * dangling / N; });
+        pr = next;
+    }
+    ids.forEach(id => { metrics[id].pagerank = pr[id]; });
+    // Communities via label propagation (undirected)
+    const label = {}; ids.forEach((id, i) => { label[id] = i; });
+    for (let iter = 0; iter < 20; iter++) {
+        let changed = false;
+        ids.forEach(id => {
+            const counts = {};
+            adj[id].forEach(nb => { counts[label[nb]] = (counts[label[nb]] || 0) + 1; });
+            let best = label[id], bestCount = -1;
+            Object.keys(counts).forEach(l => { if (counts[l] > bestCount) { bestCount = counts[l]; best = parseInt(l, 10); } });
+            if (best !== label[id] && bestCount > 0) { label[id] = best; changed = true; }
+        });
+        if (!changed) break;
+    }
+    // renumber communities to 0..k
+    const remap = {}; let next = 0;
+    const communities = {};
+    ids.forEach(id => {
+        if (remap[label[id]] === undefined) remap[label[id]] = next++;
+        communities[id] = remap[label[id]];
+    });
+    return { metrics, communities };
+}
+
+async function runCentrality() {
+    let result = null;
+    if (Object.keys(nodes).length > ANALYTICS_BACKEND_THRESHOLD) {
+        try {
+            const res = await fetch("/api/centrality", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ graph: { nodes, edges } })
+            });
+            if (res.ok) result = await res.json();
+        } catch (e) { /* fall back to client */ }
+    }
+    if (!result) result = computeCentralityClient();
+    Object.keys(nodes).forEach(id => {
+        if (result.metrics && result.metrics[id]) nodes[id].metrics = result.metrics[id];
+        if (result.communities && result.communities[id] != null) nodes[id].community = result.communities[id];
+    });
+    renderRankTable();
+}
+
+function renderRankTable() {
+    const wrap = document.getElementById("rank-table-wrap");
+    if (!wrap) return;
+    const metric = document.getElementById("rank-metric")?.value || "degree";
+    const rows = Object.values(nodes).filter(n => n.metrics).map(n => ({ n, v: n.metrics[metric] || 0 }));
+    if (!rows.length) { wrap.innerHTML = '<small class="muted">Compute centrality to rank entities.</small>'; return; }
+    rows.sort((a, b) => b.v - a.v);
+    const top = rows.slice(0, 15);
+    let html = `<table class="rank-table"><thead><tr><th>#</th><th>Entity</th><th>${metric}</th></tr></thead><tbody>`;
+    top.forEach((r, i) => {
+        const v = metric === "pagerank" || metric === "closeness" ? r.v.toFixed(3) : (metric === "betweenness" ? r.v.toFixed(1) : r.v);
+        html += `<tr class="clickable" data-node="${r.n.id}"><td>${i + 1}</td><td>${(r.n.label || r.n.value || r.n.id)}</td><td>${v}</td></tr>`;
+    });
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+    wrap.querySelectorAll("tr.clickable").forEach(tr => {
+        tr.addEventListener("click", () => { const id = tr.dataset.node; if (nodes[id]) { selectNode(id); centerOnNode(id); render(); } });
+    });
+}
+
+function centerOnNode(id) {
+    const n = nodes[id]; if (!n) return;
+    view.tx = svg.clientWidth / 2 - n.x * view.scale;
+    view.ty = svg.clientHeight / 2 - n.y * view.scale;
+}
+
+// ---------- PATH NODE PICKERS + NEIGHBORHOOD ----------
+
+function populateNodeDatalist() {
+    const dl = document.getElementById("node-options");
+    if (!dl) return;
+    dl.innerHTML = "";
+    Object.values(nodes).forEach(n => {
+        const o = document.createElement("option");
+        o.value = n.label || n.value || n.id;
+        o.label = n.id;
+        dl.appendChild(o);
+    });
+}
+
+function resolveNodeRef(text) {
+    if (!text) return null;
+    if (nodes[text]) return text;
+    const exact = Object.values(nodes).find(n => (n.label || n.value || "") === text);
+    if (exact) return exact.id;
+    const ci = Object.values(nodes).find(n => (n.label || n.value || n.id).toLowerCase() === text.toLowerCase());
+    return ci ? ci.id : text;
+}
+
+function selectNeighborhood(startId, hops) {
+    if (!nodes[startId]) return;
+    const adj = undirectedAdj();
+    const seen = new Set([startId]);
+    let frontier = [startId];
+    for (let h = 0; h < hops; h++) {
+        const nextF = [];
+        frontier.forEach(id => (adj[id] || []).forEach(nb => { if (!seen.has(nb)) { seen.add(nb); nextF.push(nb); } }));
+        frontier = nextF;
+    }
+    clearSelection();
+    seen.forEach(id => { selectedNodes.add(id); selectedNodeId = id; });
+    render();
+}
+
+// ---------- TRANSFORMS HUB ----------
+
+function renderTransformsHub() {
+    const list = document.getElementById("transforms-list");
+    if (!list) return;
+    if (!availableTransforms.length) { list.innerHTML = '<small class="muted">No transforms available (server offline?).</small>'; return; }
+    const sel = selectedNodeId && nodes[selectedNodeId] ? nodes[selectedNodeId] : null;
+    list.innerHTML = "";
+    availableTransforms.forEach(t => {
+        const applies = !sel || !t.inputTypes || !t.inputTypes.length || t.inputTypes.includes(sel.entityType || "generic") || t.inputTypes.includes("*");
+        const row = document.createElement("div");
+        row.className = "project-row";
+        const label = document.createElement("div");
+        label.innerHTML = `<b>${t.name}</b><br><small class="muted">${t.description || (t.inputTypes || []).join(", ")}</small>`;
+        const btn = document.createElement("button");
+        btn.textContent = "Run";
+        btn.style.width = "auto";
+        btn.disabled = !sel || !applies;
+        btn.title = !sel ? "Select a node first" : (applies ? "Run on selected node" : "Not applicable to selected type");
+        btn.addEventListener("click", () => { if (sel) runTransformOnNode(sel, t.id); });
+        row.appendChild(label);
+        row.appendChild(btn);
+        list.appendChild(row);
+    });
+}
+
+// ---------- PROJECTS / AUTH (server persistence) ----------
+
+let currentProjectId = null;
+let currentUser = null;
+let _serverSaveTimer = null;
+
+function currentGraphPayload() {
+    return { nodes, edges, boxes, layers, activeLayerId, layoutSettings };
+}
+
+function scheduleServerSave() {
+    if (currentProjectId == null) return;
+    if (Date.now() < _suppressServerSaveUntil) return; // don't echo a remote update
+    if (_serverSaveTimer) clearTimeout(_serverSaveTimer);
+    _serverSaveTimer = setTimeout(async () => {
+        _serverSaveTimer = null;
+        try {
+            await fetch(`/api/projects/${currentProjectId}`, {
+                method: "PUT", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ graph: currentGraphPayload(), clientId: MY_CLIENT_ID })
+            });
+        } catch (e) { /* offline */ }
+    }, 1500);
+}
+
+async function refreshAuth() {
+    try {
+        const res = await fetch("/api/me");
+        if (!res.ok) return;
+        const data = await res.json();
+        currentUser = data.user;
+        const status = document.getElementById("auth-status");
+        const inEl = document.getElementById("auth-logged-in");
+        const outEl = document.getElementById("auth-logged-out");
+        if (currentUser) {
+            if (status) status.textContent = "Signed in as " + currentUser.username;
+            inEl?.classList.remove("hidden");
+            outEl?.classList.add("hidden");
+        } else {
+            if (status) status.textContent = "Working anonymously";
+            inEl?.classList.add("hidden");
+            outEl?.classList.remove("hidden");
+        }
+    } catch (e) { /* server offline */ }
+}
+
+async function refreshProjects() {
+    const list = document.getElementById("project-list");
+    if (!list) return;
+    try {
+        const res = await fetch("/api/projects");
+        if (!res.ok) return;
+        const data = await res.json();
+        const projects = Array.isArray(data) ? data : (data.projects || []);
+        list.innerHTML = "";
+        if (!projects.length) { list.innerHTML = '<small class="muted">No saved projects yet.</small>'; return; }
+        projects.forEach(p => {
+            const row = document.createElement("div");
+            row.className = "project-row" + (p.id === currentProjectId ? " active" : "");
+            const open = document.createElement("button");
+            open.className = "project-open";
+            open.textContent = p.name + (p.updated_at ? "  ·  " + String(p.updated_at).slice(0, 16) : "");
+            open.addEventListener("click", () => loadProject(p.id));
+            const del = document.createElement("button");
+            del.textContent = "✕"; del.style.width = "auto";
+            del.addEventListener("click", async () => {
+                if (!confirm("Delete project '" + p.name + "'?")) return;
+                await fetch(`/api/projects/${p.id}`, { method: "DELETE" });
+                if (currentProjectId === p.id) currentProjectId = null;
+                refreshProjects();
+            });
+            row.appendChild(open);
+            row.appendChild(del);
+            list.appendChild(row);
+        });
+    } catch (e) { list.innerHTML = '<small class="muted">Server offline — projects unavailable.</small>'; }
+}
+
+async function saveProject() {
+    const nameEl = document.getElementById("project-name");
+    const name = (nameEl?.value || "").trim() || "Untitled investigation";
+    try {
+        if (currentProjectId == null) {
+            const res = await fetch("/api/projects", {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, graph: currentGraphPayload() })
+            });
+            if (!res.ok) throw new Error("save failed");
+            const data = await res.json();
+            currentProjectId = data.id;
+            startCollab(currentProjectId);
+        } else {
+            await fetch(`/api/projects/${currentProjectId}`, {
+                method: "PUT", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ name, graph: currentGraphPayload() })
+            });
+        }
+        refreshProjects();
+        refreshVersions();
+    } catch (e) { alert("Could not save project (server offline?)."); }
+}
+
+async function loadProject(id) {
+    try {
+        const res = await fetch(`/api/projects/${id}`);
+        if (!res.ok) throw new Error();
+        const data = await res.json();
+        pushUndo();
+        _suppressServerSaveUntil = Date.now() + 2500; // opening must not re-PUT/broadcast
+        applyGraphPayload(data.graph || {});
+        currentProjectId = id;
+        startCollab(id);
+        const nameEl = document.getElementById("project-name");
+        if (nameEl) nameEl.value = data.name || "";
+        render();
+        refreshProjects();
+        refreshVersions();
+    } catch (e) { alert("Could not load project."); }
+}
+
+async function refreshVersions() {
+    const wrap = document.getElementById("version-list");
+    if (!wrap || currentProjectId == null) { if (wrap) wrap.innerHTML = ""; return; }
+    try {
+        const res = await fetch(`/api/projects/${currentProjectId}/versions`);
+        if (!res.ok) return;
+        const vdata = await res.json();
+        const versions = Array.isArray(vdata) ? vdata : (vdata.versions || []);
+        if (!versions.length) { wrap.innerHTML = ""; return; }
+        wrap.innerHTML = '<div class="entity-category-title">Version history</div>';
+        versions.slice(0, 8).forEach(v => {
+            const row = document.createElement("div");
+            row.className = "project-row";
+            const span = document.createElement("span");
+            span.textContent = String(v.created_at || "").slice(0, 19);
+            const btn = document.createElement("button");
+            btn.textContent = "Restore"; btn.style.width = "auto";
+            btn.addEventListener("click", async () => {
+                const r = await fetch(`/api/projects/${currentProjectId}/versions/${v.id}/restore`, { method: "POST" });
+                if (r.ok) { const d = await r.json(); pushUndo(); applyGraphPayload(d.graph || {}); render(); }
+            });
+            row.appendChild(span);
+            row.appendChild(btn);
+            wrap.appendChild(row);
+        });
+    } catch (e) { /* offline */ }
+}
+
+// ---------- EXPORT BUILDERS (CSV / GraphML / report) ----------
+
+function csvEscape(v) {
+    const s = String(v == null ? "" : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function buildCSV() {
+    const header = "source,target,label,width,weight,directed";
+    const rows = edges.map(e => [e.source, e.target, e.label || "", e.width || 2, Number.isFinite(e.weight) ? e.weight : "", !!e.directed].map(csvEscape).join(","));
+    return [header].concat(rows).join("\n");
+}
+function buildGraphML() {
+    const esc = s => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    let out = '<?xml version="1.0" encoding="UTF-8"?>\n<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n';
+    out += '  <key id="label" for="node" attr.name="label" attr.type="string"/>\n';
+    out += '  <key id="type" for="node" attr.name="type" attr.type="string"/>\n';
+    out += '  <key id="x" for="node" attr.name="x" attr.type="double"/>\n  <key id="y" for="node" attr.name="y" attr.type="double"/>\n';
+    out += '  <key id="elabel" for="edge" attr.name="label" attr.type="string"/>\n';
+    out += '  <graph id="G" edgedefault="directed">\n';
+    Object.values(nodes).forEach(n => {
+        out += `    <node id="${esc(n.id)}"><data key="label">${esc(n.label || n.value || n.id)}</data><data key="type">${esc(n.entityType || "generic")}</data><data key="x">${n.x}</data><data key="y">${n.y}</data></node>\n`;
+    });
+    edges.forEach((e, i) => {
+        out += `    <edge id="${esc(e.id || "e" + i)}" source="${esc(e.source)}" target="${esc(e.target)}"${e.directed ? ' directed="true"' : ""}><data key="elabel">${esc(e.label || "")}</data></edge>\n`;
+    });
+    out += "  </graph>\n</graphml>\n";
+    return out;
+}
+function buildReportHTML() {
+    const stats = computeGraphStats();
+    const { svg: svgCopy } = buildExportableSvg({ scope: "content" });
+    const svgStr = serializeSvgElement(svgCopy);
+    const deg = {};
+    Object.keys(nodes).forEach(id => { deg[id] = 0; });
+    edges.forEach(e => { if (deg[e.source] != null) deg[e.source]++; if (deg[e.target] != null) deg[e.target]++; });
+    const top = Object.values(nodes).sort((a, b) => (deg[b.id] || 0) - (deg[a.id] || 0)).slice(0, 10);
+    const rows = top.map(n => `<tr><td>${n.label || n.value || n.id}</td><td>${(getEntityType && getEntityType(n.entityType)?.name) || n.entityType || ""}</td><td>${deg[n.id] || 0}</td></tr>`).join("");
+    return `<!doctype html><html><head><meta charset="utf-8"><title>Node Mapper Report</title>
+<style>body{font-family:system-ui,sans-serif;margin:24px;color:#0f172a}h1{margin-bottom:4px}table{border-collapse:collapse;margin-top:8px}td,th{border:1px solid #ddd;padding:4px 8px;text-align:left}svg{max-width:100%;border:1px solid #eee}</style></head>
+<body><h1>Node Mapper — Investigation Report</h1>
+<p>Nodes: ${stats.nodeCount} · Edges: ${stats.edgeCount} · Components: ${stats.components} · Avg degree: ${stats.averageDegree} · Max degree: ${stats.maxDegree}</p>
+<h2>Graph</h2>${svgStr}
+<h2>Top entities by degree</h2><table><thead><tr><th>Entity</th><th>Type</th><th>Degree</th></tr></thead><tbody>${rows}</tbody></table>
+</body></html>`;
+}
+
+// ---------- MERGE-ON-IMPORT ----------
+
+function mergeGraphPayload(graph) {
+    const idMap = {};
+    Object.entries(graph.nodes || {}).forEach(([id, node]) => {
+        const newId = genId("n");
+        idMap[id] = newId;
+        nodes[newId] = normalizeNode({ ...node, id: newId, box: null, layer: activeLayerId });
+    });
+    (graph.edges || []).forEach(ed => {
+        const s = idMap[ed.source] || ed.source;
+        const t = idMap[ed.target] || ed.target;
+        if (!nodes[s] || !nodes[t]) return;
+        if (edges.some(e => e.source === s && e.target === t)) return;
+        edges.push({ ...ed, id: genId("e"), source: s, target: t, layer: activeLayerId });
+    });
+}
+
+// ---------- IN-PLACE LABEL EDIT (double-click) ----------
+
+svg.addEventListener("dblclick", e => {
+    const nodeId = e.target.dataset?.nodeId;
+    if (!nodeId || !nodes[nodeId]) return;
+    if (isLayerLocked(nodes[nodeId].layer)) return;
+    const n = nodes[nodeId];
+    const input = document.createElement("input");
+    input.className = "inline-edit";
+    input.value = n.label || n.value || "";
+    const rect = svg.getBoundingClientRect();
+    const screenX = rect.left + view.tx + n.x * view.scale;
+    const screenY = rect.top + view.ty + n.y * view.scale;
+    input.style.left = (screenX - 60) + "px";
+    input.style.top = (screenY - 10) + "px";
+    input.style.width = "120px";
+    document.body.appendChild(input);
+    input.focus(); input.select();
+    let done = false;
+    const commit = (save) => {
+        if (done) return; done = true;
+        if (save) { pushUndo(); n.label = input.value; render(); }
+        input.remove();
+    };
+    input.addEventListener("keydown", ev => {
+        if (ev.key === "Enter") commit(true);
+        else if (ev.key === "Escape") commit(false);
+    });
+    input.addEventListener("blur", () => commit(true));
+});
+
+// ---------- WIRE NEW CONTROLS ----------
+
+function wireNewControls() {
+    // zoom controls
+    document.getElementById("zoom-in")?.addEventListener("click", () => zoomAtCenter(1.2));
+    document.getElementById("zoom-out")?.addEventListener("click", () => zoomAtCenter(1 / 1.2));
+    document.getElementById("zoom-fit")?.addEventListener("click", () => fitToContent());
+    document.getElementById("zoom-reset")?.addEventListener("click", () => resetView());
+
+    // palette filter
+    document.getElementById("palette-search")?.addEventListener("input", buildEntityPalette);
+
+    // type filter dropdown
+    document.getElementById("filter-type")?.addEventListener("change", e => { filterType = e.target.value; render(); });
+
+    // encoding + legend
+    document.getElementById("encoding-mode")?.addEventListener("change", applyEncoding);
+    document.getElementById("encoding-size")?.addEventListener("change", applyEncoding);
+    document.getElementById("toggle-legend")?.addEventListener("change", renderLegend);
+
+    // centrality / community / rank
+    document.getElementById("compute-centrality")?.addEventListener("click", async () => { await runCentrality(); });
+    document.getElementById("detect-communities")?.addEventListener("click", async () => {
+        await runCentrality();
+        const sel = document.getElementById("encoding-mode"); if (sel) sel.value = "community";
+        applyEncoding();
+    });
+    document.getElementById("rank-metric")?.addEventListener("change", renderRankTable);
+
+    // path pickers
+    document.getElementById("path-start-sel")?.addEventListener("click", () => { if (selectedNodeId) document.getElementById("path-start").value = nodes[selectedNodeId].label || selectedNodeId; });
+    document.getElementById("path-end-sel")?.addEventListener("click", () => { if (selectedNodeId) document.getElementById("path-end").value = nodes[selectedNodeId].label || selectedNodeId; });
+    document.getElementById("select-neighborhood")?.addEventListener("click", () => {
+        const startId = resolveNodeRef((document.getElementById("path-start")?.value || "").trim()) || selectedNodeId;
+        const hops = parseInt(document.getElementById("hops-n")?.value || "1", 10);
+        if (startId) selectNeighborhood(startId, hops);
+    });
+
+    // projects / auth
+    document.getElementById("project-save")?.addEventListener("click", saveProject);
+    document.getElementById("project-refresh")?.addEventListener("click", () => { refreshProjects(); refreshVersions(); });
+    document.getElementById("project-new")?.addEventListener("click", () => {
+        pushUndo();
+        nodes = {}; edges = []; boxes = {}; layers = normalizeLayers([]); activeLayerId = layers[0].id;
+        nodeCounter = edgeCounter = boxCounter = 0;
+        currentProjectId = null;
+        stopCollab();
+        clearSelection(); render(); refreshProjects(); refreshVersions();
+    });
+    document.getElementById("auth-login")?.addEventListener("click", async () => {
+        const username = document.getElementById("auth-username").value.trim();
+        const password = document.getElementById("auth-password").value;
+        const res = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+        if (res.ok) { await refreshAuth(); refreshProjects(); } else { alert("Login failed."); }
+    });
+    document.getElementById("auth-register")?.addEventListener("click", async () => {
+        const username = document.getElementById("auth-username").value.trim();
+        const password = document.getElementById("auth-password").value;
+        const res = await fetch("/api/register", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username, password }) });
+        if (res.ok) { await refreshAuth(); refreshProjects(); } else { const e = await res.json().catch(() => ({})); alert("Register failed: " + (e.error || res.status)); }
+    });
+    document.getElementById("auth-logout")?.addEventListener("click", async () => { await fetch("/api/logout", { method: "POST" }); currentProjectId = null; await refreshAuth(); refreshProjects(); });
+
+    // clipboard interop
+    document.getElementById("copy-png")?.addEventListener("click", async () => {
+        try {
+            const { svg: svgCopy, width, height, background } = buildExportableSvg({ scope: "content" });
+            const png = await svgStringToPngBlob(serializeSvgElement(svgCopy), width, height, background, 2);
+            if (navigator.clipboard && window.ClipboardItem) {
+                await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+                alert("Graph image copied to clipboard.");
+            } else { downloadBlob(png, "graph.png"); }
+        } catch (e) { alert("Copy failed; downloading instead."); }
+    });
+    document.getElementById("copy-json")?.addEventListener("click", async () => {
+        const ids = new Set(getSelectedNodeIds());
+        const sub = ids.size
+            ? { nodes: Object.fromEntries([...ids].map(id => [id, nodes[id]])), edges: edges.filter(e => ids.has(e.source) && ids.has(e.target)), boxes: {} }
+            : currentGraphPayload();
+        try { await navigator.clipboard.writeText(JSON.stringify(sub, null, 2)); alert("Subgraph JSON copied."); }
+        catch (e) { alert("Clipboard unavailable."); }
+    });
+
+    // minimap drag-to-reposition
+    const mm = document.getElementById("minimap-container");
+    if (mm) {
+        let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+        const header = mm.querySelector(".minimap-header") || mm;
+        header.addEventListener("pointerdown", e => {
+            dragging = true; mm.classList.add("dragging");
+            sx = e.clientX; sy = e.clientY;
+            const r = mm.getBoundingClientRect(); const pr = mm.parentElement.getBoundingClientRect();
+            ox = r.left - pr.left; oy = r.top - pr.top;
+            mm.style.right = "auto"; mm.style.left = ox + "px"; mm.style.top = oy + "px";
+            header.setPointerCapture(e.pointerId);
+            e.stopPropagation();
+        });
+        header.addEventListener("pointermove", e => {
+            if (!dragging) return;
+            mm.style.left = (ox + e.clientX - sx) + "px";
+            mm.style.top = (oy + e.clientY - sy) + "px";
+        });
+        header.addEventListener("pointerup", e => { dragging = false; mm.classList.remove("dragging"); try { header.releasePointerCapture(e.pointerId); } catch (_) {} });
+    }
+
+    // sidebar collapse toggle (added to top bar)
+    const topLeft = document.querySelector(".top-left");
+    if (topLeft && !document.getElementById("sidebar-collapse")) {
+        const btn = document.createElement("button");
+        btn.id = "sidebar-collapse"; btn.title = "Toggle sidebar"; btn.textContent = "☰";
+        btn.style.cssText = "width:34px;cursor:pointer;border-radius:6px;border:1px solid var(--button-border);background:var(--button-bg);color:var(--button-text)";
+        btn.addEventListener("click", () => document.body.classList.toggle("sidebar-collapsed"));
+        topLeft.insertBefore(btn, topLeft.firstChild);
+    }
+
+    // onboarding
+    const onboarding = document.getElementById("onboarding");
+    if (onboarding && !localStorage.getItem("onboarding-dismissed-v1")) {
+        // shown after initial graph load (see INIT)
+    }
+    document.getElementById("onboarding-dismiss")?.addEventListener("click", () => {
+        document.getElementById("onboarding")?.classList.add("hidden");
+        localStorage.setItem("onboarding-dismissed-v1", "1");
+    });
+
+    // ARIA for tabs
+    document.querySelectorAll(".tab-button").forEach(btn => {
+        btn.addEventListener("click", () => {
+            document.querySelectorAll(".tab-button").forEach(b => b.setAttribute("aria-selected", b.classList.contains("active") ? "true" : "false"));
+        });
+    });
+}
+
+function maybeShowOnboarding() {
+    const onboarding = document.getElementById("onboarding");
+    if (!onboarding) return;
+    if (Object.keys(nodes).length === 0 && !localStorage.getItem("onboarding-dismissed-v1")) {
+        onboarding.classList.remove("hidden");
+    }
+}
+
+// ==================================================================
+//          ALTERNATE VIEWS, TIMELINE, ALL-PATHS, COLLABORATION
+// ==================================================================
+
+function _esc(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function degreeMap() {
+    const deg = {};
+    Object.keys(nodes).forEach(id => { deg[id] = 0; });
+    edges.forEach(e => { if (deg[e.source] != null) deg[e.source]++; if (deg[e.target] != null) deg[e.target]++; });
+    return deg;
+}
+
+function setViewMode(mode) {
+    viewMode = mode;
+    const sel = document.getElementById("view-mode");
+    if (sel && sel.value !== mode) sel.value = mode;
+    render();
+}
+
+// ----- Entity list view -----
+function renderListView(container) {
+    const deg = degreeMap();
+    const rows = Object.values(nodes).filter(isNodeVisible).sort((a, b) => (deg[b.id] || 0) - (deg[a.id] || 0));
+    let html = `<div class="alt-view-header">Entity list — ${rows.length} entities</div>`;
+    html += '<table class="rank-table"><thead><tr><th>Label</th><th>Type</th><th>Value</th><th>Degree</th></tr></thead><tbody>';
+    rows.forEach(n => {
+        const t = (typeof getEntityType === "function" && getEntityType(n.entityType)) || {};
+        html += `<tr class="clickable" data-node="${_esc(n.id)}"><td>${(t.icon || "")} ${_esc(n.label || n.value || n.id)}</td><td>${_esc(t.name || n.entityType || "")}</td><td>${_esc(n.value || "")}</td><td>${deg[n.id] || 0}</td></tr>`;
+    });
+    html += "</tbody></table>";
+    container.innerHTML = html;
+    container.querySelectorAll("tr.clickable").forEach(tr => {
+        tr.addEventListener("click", () => {
+            const id = tr.dataset.node;
+            if (nodes[id]) { selectNode(id); setViewMode("graph"); centerOnNode(id); render(); }
+        });
+    });
+}
+
+// ----- Bubble view (nodes sized by degree, packed in a grid) -----
+function renderBubbleView() {
+    svg.innerHTML = "";
+    const theme = getThemeTokens();
+    const viewport = document.createElementNS(NS, "g");
+    viewport.setAttribute("id", "viewport");
+    viewport.setAttribute("transform", `translate(${view.tx},${view.ty}) scale(${view.scale})`);
+    svg.appendChild(viewport);
+    const bg = document.createElementNS(NS, "rect");
+    bg.setAttribute("x", -5000); bg.setAttribute("y", -5000); bg.setAttribute("width", 10000); bg.setAttribute("height", 10000);
+    bg.setAttribute("fill", "transparent"); bg.setAttribute("pointer-events", "all"); bg.setAttribute("id", "svg-bg");
+    viewport.appendChild(bg);
+
+    const deg = degreeMap();
+    const list = Object.values(nodes).filter(isNodeVisible).sort((a, b) => (deg[b.id] || 0) - (deg[a.id] || 0));
+    const maxDeg = Math.max(1, ...list.map(n => deg[n.id] || 0));
+    const cols = Math.ceil(Math.sqrt(list.length)) || 1;
+    const cell = 150;
+    list.forEach((n, i) => {
+        const cx = (i % cols) * cell + cell / 2;
+        const cy = Math.floor(i / cols) * cell + cell / 2;
+        const r = 16 + (deg[n.id] || 0) / maxDeg * 46;
+        const c = document.createElementNS(NS, "circle");
+        c.setAttribute("cx", cx); c.setAttribute("cy", cy); c.setAttribute("r", r);
+        c.setAttribute("fill", getNodeFill(n));
+        c.setAttribute("stroke", isNodeSelected(n.id) ? "#ff9900" : theme.nodeStroke);
+        c.setAttribute("stroke-width", isNodeSelected(n.id) ? 3 : 1);
+        c.dataset.nodeId = n.id;
+        viewport.appendChild(c);
+        const t = document.createElementNS(NS, "text");
+        t.textContent = n.label || n.value || n.id;
+        t.setAttribute("x", cx); t.setAttribute("y", cy + r + 13);
+        t.setAttribute("text-anchor", "middle"); t.setAttribute("font-size", "11");
+        t.setAttribute("class", "node-label"); t.dataset.nodeId = n.id;
+        viewport.appendChild(t);
+    });
+}
+
+// ----- Geographic map view (equirectangular projection, no tiles) -----
+function renderMapView() {
+    svg.innerHTML = "";
+    const theme = getThemeTokens();
+    const viewport = document.createElementNS(NS, "g");
+    viewport.setAttribute("id", "viewport");
+    viewport.setAttribute("transform", `translate(${view.tx},${view.ty}) scale(${view.scale})`);
+    svg.appendChild(viewport);
+    const bg = document.createElementNS(NS, "rect");
+    bg.setAttribute("x", -5000); bg.setAttribute("y", -5000); bg.setAttribute("width", 10000); bg.setAttribute("height", 10000);
+    bg.setAttribute("fill", "transparent"); bg.setAttribute("pointer-events", "all"); bg.setAttribute("id", "svg-bg");
+    viewport.appendChild(bg);
+
+    const W = 1600, H = 800;
+    const frame = document.createElementNS(NS, "rect");
+    frame.setAttribute("x", 0); frame.setAttribute("y", 0); frame.setAttribute("width", W); frame.setAttribute("height", H);
+    frame.setAttribute("fill", "none"); frame.setAttribute("stroke", theme.minimapEdge); frame.setAttribute("stroke-width", 1);
+    viewport.appendChild(frame);
+    for (let lng = -180; lng <= 180; lng += 30) {
+        const x = (lng + 180) / 360 * W;
+        const ln = document.createElementNS(NS, "line");
+        ln.setAttribute("x1", x); ln.setAttribute("y1", 0); ln.setAttribute("x2", x); ln.setAttribute("y2", H);
+        ln.setAttribute("stroke", theme.minimapEdge); ln.setAttribute("stroke-width", 0.5); ln.setAttribute("opacity", 0.5);
+        viewport.appendChild(ln);
+    }
+    for (let lat = -90; lat <= 90; lat += 30) {
+        const y = (90 - lat) / 180 * H;
+        const ln = document.createElementNS(NS, "line");
+        ln.setAttribute("x1", 0); ln.setAttribute("y1", y); ln.setAttribute("x2", W); ln.setAttribute("y2", y);
+        ln.setAttribute("stroke", theme.minimapEdge); ln.setAttribute("stroke-width", 0.5); ln.setAttribute("opacity", 0.5);
+        viewport.appendChild(ln);
+    }
+    const proj = (lat, lng) => ({ x: (lng + 180) / 360 * W, y: (90 - lat) / 180 * H });
+    const located = {};
+    Object.values(nodes).forEach(n => {
+        if (!isNodeVisible(n)) return;
+        const lat = parseFloat((n.properties || {}).lat);
+        const lng = parseFloat((n.properties || {}).lng);
+        if (Number.isFinite(lat) && Number.isFinite(lng)) located[n.id] = proj(lat, lng);
+    });
+    edges.forEach(e => {
+        if (located[e.source] && located[e.target]) {
+            const ln = document.createElementNS(NS, "line");
+            ln.setAttribute("x1", located[e.source].x); ln.setAttribute("y1", located[e.source].y);
+            ln.setAttribute("x2", located[e.target].x); ln.setAttribute("y2", located[e.target].y);
+            ln.setAttribute("stroke", theme.edgeDefault); ln.setAttribute("stroke-width", 1);
+            viewport.appendChild(ln);
+        }
+    });
+    Object.keys(located).forEach(id => {
+        const n = nodes[id]; const p = located[id];
+        const c = document.createElementNS(NS, "circle");
+        c.setAttribute("cx", p.x); c.setAttribute("cy", p.y); c.setAttribute("r", 8);
+        c.setAttribute("fill", getNodeFill(n)); c.setAttribute("stroke", theme.nodeStroke); c.dataset.nodeId = id;
+        viewport.appendChild(c);
+        const t = document.createElementNS(NS, "text");
+        t.textContent = n.label || n.value || id;
+        t.setAttribute("x", p.x); t.setAttribute("y", p.y - 12);
+        t.setAttribute("text-anchor", "middle"); t.setAttribute("font-size", "11"); t.setAttribute("class", "node-label");
+        viewport.appendChild(t);
+    });
+    if (!Object.keys(located).length) {
+        const t = document.createElementNS(NS, "text");
+        t.textContent = "No located entities — add lat/lng properties (e.g. on Location entities).";
+        t.setAttribute("x", W / 2); t.setAttribute("y", H / 2); t.setAttribute("text-anchor", "middle");
+        t.setAttribute("font-size", "20"); t.setAttribute("fill", theme.minimapNode);
+        viewport.appendChild(t);
+    }
+}
+
+// ----- Canvas 2D renderer with viewport culling + level-of-detail -----
+function renderCanvasView(canvas) {
+    const wrap = canvas.parentElement;
+    const w = wrap.clientWidth, h = wrap.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.floor(w * dpr));
+    canvas.height = Math.max(1, Math.floor(h * dpr));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const cs = getComputedStyle(document.body);
+    const bg = (cs.getPropertyValue("--canvas-bg") || "#f0f0f0").trim();
+    const edgeCol = (cs.getPropertyValue("--edge-default") || "#888").trim();
+    const labelCol = (cs.getPropertyValue("--node-label") || "#0f172a").trim();
+    const strokeCol = (cs.getPropertyValue("--node-stroke") || "#1f2937").trim();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, w, h);
+    ctx.translate(view.tx, view.ty);
+    ctx.scale(view.scale, view.scale);
+
+    // visible world rect (with margin) for culling
+    const wl = (0 - view.tx) / view.scale, wt = (0 - view.ty) / view.scale;
+    const wr = (w - view.tx) / view.scale, wb = (h - view.ty) / view.scale;
+    const m = 120;
+    const vis = id => {
+        const n = nodes[id]; if (!n || !isNodeVisible(n)) return false;
+        return n.x >= wl - m && n.x <= wr + m && n.y >= wt - m && n.y <= wb + m;
+    };
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = edgeCol;
+    edges.forEach(e => {
+        const s = nodes[e.source], t = nodes[e.target];
+        if (!s || !t) return;
+        if (!isNodeVisible(s) || !isNodeVisible(t)) return;
+        if (!vis(e.source) && !vis(e.target)) return;
+        ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(t.x, t.y); ctx.stroke();
+    });
+    const showLabels = view.scale > 0.5; // LOD
+    Object.values(nodes).forEach(n => {
+        if (!vis(n.id)) return;
+        const { radius } = getNodeDimensions(n);
+        ctx.beginPath();
+        ctx.fillStyle = getNodeFill(n);
+        ctx.arc(n.x, n.y, Math.max(4, radius), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.lineWidth = isNodeSelected(n.id) ? 3 : 1;
+        ctx.strokeStyle = isNodeSelected(n.id) ? "#ff9900" : strokeCol;
+        ctx.stroke();
+        if (showLabels) {
+            ctx.fillStyle = labelCol;
+            ctx.font = "12px system-ui, sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(n.label || n.value || n.id, n.x, n.y + radius + 14);
+        }
+    });
+}
+
+function canvasToWorld(canvas, clientX, clientY) {
+    const r = canvas.getBoundingClientRect();
+    return { x: (clientX - r.left - view.tx) / view.scale, y: (clientY - r.top - view.ty) / view.scale };
+}
+function hitTestNodeAt(wx, wy) {
+    let best = null, bestD = Infinity;
+    Object.values(nodes).forEach(n => {
+        if (!isNodeVisible(n)) return;
+        const { radius } = getNodeDimensions(n);
+        const d = Math.hypot(n.x - wx, n.y - wy);
+        if (d <= Math.max(8, radius) && d < bestD) { bestD = d; best = n.id; }
+    });
+    return best;
+}
+
+// Canvas-mode pointer handling (pan / zoom / select + drag)
+function wireCanvasInteractions() {
+    const canvas = document.getElementById("graphCanvasGl");
+    if (!canvas || canvas.dataset.wired) return;
+    canvas.dataset.wired = "1";
+    let cPan = false, cPanStart = null, cViewStart = null, cDrag = null;
+    canvas.addEventListener("wheel", e => {
+        e.preventDefault();
+        const factor = (-e.deltaY) > 0 ? 1.1 : 0.9;
+        const target = Math.max(MIN_SCALE, Math.min(MAX_SCALE, view.scale * factor));
+        const eff = target / view.scale; if (eff === 1) return;
+        const wp = canvasToWorld(canvas, e.clientX, e.clientY);
+        view.tx = (view.tx - wp.x * view.scale) * eff + wp.x * (view.scale * eff);
+        view.ty = (view.ty - wp.y * view.scale) * eff + wp.y * (view.scale * eff);
+        view.scale *= eff;
+        render();
+    }, { passive: false });
+    canvas.addEventListener("pointerdown", e => {
+        const wp = canvasToWorld(canvas, e.clientX, e.clientY);
+        const hit = hitTestNodeAt(wp.x, wp.y);
+        if (hit) {
+            selectNode(hit, { additive: e.shiftKey });
+            cDrag = hit; dragGroupStart = {}; dragUndoPushed = false;
+            getSelectedNodeIds().forEach(id => { if (nodes[id]) dragGroupStart[id] = { x: nodes[id].x, y: nodes[id].y }; });
+            dragAnchorStart = { x: nodes[hit].x, y: nodes[hit].y };
+            dragOffset = { x: wp.x - nodes[hit].x, y: wp.y - nodes[hit].y };
+        } else {
+            clearSelection();
+            cPan = true; cPanStart = { x: e.clientX, y: e.clientY }; cViewStart = { tx: view.tx, ty: view.ty };
+        }
+        canvas.setPointerCapture(e.pointerId);
+        render();
+    });
+    canvas.addEventListener("pointermove", e => {
+        if (cDrag) {
+            const wp = canvasToWorld(canvas, e.clientX, e.clientY);
+            if (!dragUndoPushed) { pushUndo(); dragUndoPushed = true; }
+            const ax = wp.x - dragOffset.x, ay = wp.y - dragOffset.y;
+            const dx = ax - dragAnchorStart.x, dy = ay - dragAnchorStart.y;
+            Object.keys(dragGroupStart).forEach(id => { if (nodes[id]) { nodes[id].x = dragGroupStart[id].x + dx; nodes[id].y = dragGroupStart[id].y + dy; } });
+            render();
+        } else if (cPan) {
+            view.tx = cViewStart.tx + (e.clientX - cPanStart.x);
+            view.ty = cViewStart.ty + (e.clientY - cPanStart.y);
+            render();
+        }
+    });
+    canvas.addEventListener("pointerup", e => {
+        if (cDrag) Object.keys(dragGroupStart).forEach(id => updateNodeBoxMembership(id));
+        cDrag = null; cPan = false; dragGroupStart = {};
+        try { canvas.releasePointerCapture(e.pointerId); } catch (_) {}
+    });
+    canvas.addEventListener("contextmenu", e => {
+        e.preventDefault();
+        const wp = canvasToWorld(canvas, e.clientX, e.clientY);
+        const hit = hitTestNodeAt(wp.x, wp.y);
+        if (hit) { selectNode(hit); render(); }
+    });
+}
+
+// ----- All paths up to length k (bounded DFS) -----
+function allPathsUpToK(start, goal, k) {
+    const adj = buildAdjacency({ directed: false, weighted: false });
+    const nodeSet = new Set(), edgeSet = new Set();
+    let count = 0;
+    const path = [start], epath = [], visited = new Set([start]);
+    (function dfs(u) {
+        if (count >= 300) return;
+        if (u === goal) {
+            count++;
+            path.forEach(n => nodeSet.add(n));
+            epath.forEach(id => edgeSet.add(id));
+            return;
+        }
+        if (epath.length >= k) return;
+        (adj[u] || []).forEach(({ to, id }) => {
+            if (!visited.has(to)) {
+                visited.add(to); path.push(to); epath.push(id);
+                dfs(to);
+                epath.pop(); path.pop(); visited.delete(to);
+            }
+        });
+    })(start);
+    return { nodeSet, edgeSet, count };
+}
+
+function runAllPaths() {
+    const startId = resolveNodeRef((document.getElementById("path-start")?.value || "").trim());
+    const endId = resolveNodeRef((document.getElementById("path-end")?.value || "").trim());
+    const k = Math.max(1, Math.min(6, parseInt(document.getElementById("allpaths-k")?.value || "4", 10)));
+    const resEl = document.getElementById("analytics-path-result");
+    if (!startId || !endId || !nodes[startId] || !nodes[endId]) {
+        if (resEl) resEl.innerHTML = '<div class="error-text">Pick a valid start and target entity.</div>';
+        return;
+    }
+    const { nodeSet, edgeSet, count } = allPathsUpToK(startId, endId, k);
+    pathHighlights.nodes = nodeSet;
+    pathHighlights.edges = edgeSet;
+    render();
+    if (resEl) resEl.innerHTML = `<div><strong>All paths ≤ ${k}:</strong> ${count} path(s)</div><div><strong>Entities on paths:</strong> ${nodeSet.size}</div>`;
+}
+
+// ----- Timeline -----
+function timeExtent() {
+    let min = Infinity, max = -Infinity;
+    Object.values(nodes).forEach(n => {
+        const t = nodeTime(n);
+        if (t != null) { min = Math.min(min, t); max = Math.max(max, t); }
+    });
+    if (min === Infinity) return null;
+    if (min === max) max = min + 1;
+    return { min, max };
+}
+function updateTimeline() {
+    const bar = document.getElementById("timeline");
+    const range = document.getElementById("timeline-range");
+    const readout = document.getElementById("timeline-readout");
+    if (!bar || !range) return;
+    const show = document.getElementById("toggle-timeline")?.checked;
+    if (!show) { bar.classList.add("hidden"); timeFilter.active = false; return; }
+    const ext = timeExtent();
+    if (!ext) { bar.classList.add("hidden"); timeFilter.active = false; if (readout) readout.textContent = "no dated entities"; return; }
+    bar.classList.remove("hidden");
+    timeFilter.active = true;
+    timeFilter.min = ext.min;
+    const frac = parseInt(range.value, 10) / 100;
+    timeFilter.max = ext.min + (ext.max - ext.min) * frac;
+    if (readout) readout.textContent = "≤ " + new Date(timeFilter.max).toISOString().slice(0, 10);
+}
+
+// ----- Real-time collaboration (SSE) -----
+const MY_CLIENT_ID = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : String(performance.now()) + "-c";
+let _collabSource = null;
+let _suppressServerSaveUntil = 0;
+
+function startCollab(projectId) {
+    stopCollab();
+    if (typeof EventSource === "undefined" || projectId == null) return;
+    try {
+        _collabSource = new EventSource(`/api/projects/${projectId}/stream`);
+        _collabSource.onmessage = ev => {
+            let d; try { d = JSON.parse(ev.data); } catch (e) { return; }
+            if (d.type === "presence") updatePresence(d.count);
+            else if (d.type === "updated" && d.clientId !== MY_CLIENT_ID) reloadCollabGraph(projectId);
+        };
+        _collabSource.onerror = () => { /* browser auto-reconnects */ };
+    } catch (e) { /* unsupported */ }
+}
+function stopCollab() {
+    if (_collabSource) { try { _collabSource.close(); } catch (e) {} _collabSource = null; }
+    updatePresence(0);
+}
+async function reloadCollabGraph(id) {
+    try {
+        const r = await fetch(`/api/projects/${id}`);
+        if (!r.ok) return;
+        const d = await r.json();
+        _suppressServerSaveUntil = Date.now() + 3000; // don't echo back
+        applyGraphPayload(d.graph || {});
+        render();
+        showCollabToast("Synced changes from a collaborator");
+    } catch (e) { /* offline */ }
+}
+function updatePresence(count) {
+    const el = document.getElementById("presence-indicator");
+    if (!el) return;
+    if (count > 1) { el.style.display = "inline-flex"; el.textContent = "👥 " + count; }
+    else el.style.display = "none";
+}
+let _toastTimer = null;
+function showCollabToast(msg) {
+    const el = document.getElementById("collab-toast");
+    if (!el) return;
+    el.textContent = msg;
+    el.classList.remove("hidden");
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => el.classList.add("hidden"), 2500);
+}
+
+// ----- Wire the deferred controls -----
+function wireDeferredControls() {
+    document.getElementById("view-mode")?.addEventListener("change", e => setViewMode(e.target.value));
+    document.getElementById("toggle-timeline")?.addEventListener("change", () => { updateTimeline(); render(); });
+    document.getElementById("timeline-range")?.addEventListener("input", () => { updateTimeline(); render(); });
+    document.getElementById("find-all-paths")?.addEventListener("click", runAllPaths);
+    wireCanvasInteractions();
+}
+
 // ---------- INIT ----------
 
 syncLayoutControlsFromSettings();
@@ -2883,4 +5029,14 @@ syncSnapControlsFromSettings();
 initTheme();
 updateAutosaveInfo();
 renderAnalyticsPanel();
-loadGraphFromBackend();
+buildEntityPalette();
+wireNewControls();
+wireDeferredControls();
+refreshAuth();
+refreshProjects();
+loadTransforms();
+loadGraphFromBackend().then(() => {
+    populateFilterTypes();
+    populateNodeDatalist();
+    maybeShowOnboarding();
+});

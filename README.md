@@ -76,11 +76,27 @@ Use the **Import / Export** section in the sidebar to choose a format, select a 
 
 The server uses an in-memory graph (`GRAPH` in `node_mapper.py`). Data is not persisted between restarts beyond the browser’s LocalStorage autosave.
 
+## Link-analysis features
+Beyond plain diagramming, Node Mapper now works as a lightweight link-analysis tool:
+- **Typed entities:** every node is an instance of an entity type (Person, Domain, Email, IPv4, Host, Organization, Malware, File, …) defined in `static/entities.js`, each with an icon, color, default shape, a primary `value`, and a typed property schema. Drag a type from the **Entity Palette**, or change a node's type in the property editor (with advisory value validation).
+- **Transforms:** right-click an entity (or use the **Transforms** tab) to run a transform that queries the server and expands the graph with new connected entities. Results merge additively, de-duplicate by type+value, and are tagged with provenance. Demo transforms run offline (synthetic data) via `/api/transform`.
+- **Centrality & communities:** the **Analytics** tab computes degree / betweenness / closeness / PageRank with a ranked table, plus label-propagation communities. The **View** tab can color/size nodes by any metric or by community (data-driven encoding), with an on-canvas legend.
+- **Investigation workflow:** marquee select, copy/paste/duplicate, group/ungroup, double-click rename, right-click context menus, N-hop neighborhood selection, shortest paths by clicking endpoints, and pinned nodes excluded from layouts.
+- **Projects & collaboration:** save named projects/cases to the server (SQLite) with version history, optional account login, and autosave. Anonymous use keeps working without an account.
+
 ## API endpoints
-- `GET /graph` — Return the current in-memory graph.
-- `POST /nodes` — Create a node; accepts `x`, `y`, and `label` (defaults provided).
-- `POST /edges` — Create an edge between `source` and `target` node IDs.
-- `GET /` and `GET /static/*` — Serve the front-end assets.
+- `GET /graph`, `GET /`, `GET /static/*` — graph + front-end assets.
+- `POST /analytics` — stats + shortest path (BFS/Dijkstra) for large graphs.
+- `POST /api/centrality` — degree/betweenness/closeness/PageRank + communities.
+- `GET /api/transforms`, `POST /api/transform` — list / run transforms.
+- `GET|POST /api/projects`, `GET|PUT|DELETE /api/projects/<id>`, `GET /api/projects/<id>/versions`, `POST /api/projects/<id>/versions/<vid>/restore` — project/case persistence + history.
+- `POST /api/register`, `POST /api/login`, `POST /api/logout`, `GET /api/me` — optional session auth.
+
+Set `FLASK_DEBUG=1` to enable the dev debugger (off by default); `HOST`/`PORT` override the bind address.
+
+## Testing
+- JavaScript (layout engines + entity registry): `npm test` — uses Node's built-in test runner, no dependencies.
+- Python (server analytics, centrality, transforms, projects): `pip install pytest && python -m pytest -q tests`.
 
 ## Analytics
 - Use the **Analytics** panel in the sidebar to compute node/edge counts, component counts, average/max degree, and isolated node totals.

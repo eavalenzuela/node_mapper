@@ -890,8 +890,10 @@ function dijkstraShortestPath(start, goal) {
     return { nodes: nodePath, edges: edgePath, cost: dist[goal], algorithm: "dijkstra" };
 }
 
-function computeConnectedComponents() {
-    const adj = buildAdjacency({ directed: false, weighted: false });
+// Number of connected components. Accepts a prebuilt undirected adjacency to
+// avoid rebuilding it when the caller already has one (e.g. computeGraphStats).
+function computeConnectedComponents(adj) {
+    if (!adj) adj = buildAdjacency({ directed: false, weighted: false });
     const visited = new Set();
     let components = 0;
 
@@ -914,6 +916,58 @@ function computeConnectedComponents() {
     return components;
 }
 
+// Diameter and average shortest-path length over the largest component using
+// unweighted BFS from every node. Capped for responsiveness; returns nulls when
+// the graph is trivial or too large (matching the server's compute_distance_stats).
+const MAX_DISTANCE_STATS_NODES = 1500;
+function computeDistanceStats(adj) {
+    const ids = Object.keys(adj);
+    if (ids.length < 2 || ids.length > MAX_DISTANCE_STATS_NODES) return { diameter: null, avgPathLength: null };
+
+    // Largest connected component so unreachable pairs don't distort averages.
+    const seen = new Set();
+    let largest = [];
+    ids.forEach(start => {
+        if (seen.has(start)) return;
+        const comp = [];
+        const stack = [start];
+        seen.add(start);
+        while (stack.length) {
+            const node = stack.pop();
+            comp.push(node);
+            adj[node].forEach(n => { if (!seen.has(n.to)) { seen.add(n.to); stack.push(n.to); } });
+        }
+        if (comp.length > largest.length) largest = comp;
+    });
+    if (largest.length < 2) return { diameter: null, avgPathLength: null };
+
+    const compSet = new Set(largest);
+    let diameter = 0, total = 0, pairs = 0;
+    largest.forEach(source => {
+        const dist = { [source]: 0 };
+        const queue = [source];
+        let head = 0;
+        while (head < queue.length) {
+            const node = queue[head++];
+            const d = dist[node];
+            adj[node].forEach(n => {
+                if (compSet.has(n.to) && dist[n.to] === undefined) {
+                    dist[n.to] = d + 1;
+                    queue.push(n.to);
+                }
+            });
+        }
+        Object.keys(dist).forEach(target => {
+            if (target === source) return;
+            const d = dist[target];
+            if (d > diameter) diameter = d;
+            total += d;
+            pairs += 1;
+        });
+    });
+    return { diameter, avgPathLength: pairs ? Number((total / pairs).toFixed(3)) : null };
+}
+
 function computeGraphStats() {
     const nodeCount = Object.keys(nodes).length;
     const edgeCount = edges.length;
@@ -926,13 +980,22 @@ function computeGraphStats() {
         maxDegree = Math.max(maxDegree, deg);
     });
 
+    const selfLoops = edges.reduce((acc, e) => acc + (e.source === e.target ? 1 : 0), 0);
+    const possible = nodeCount > 1 ? nodeCount * (nodeCount - 1) / 2 : 0;
+    const density = possible ? Number((edgeCount / possible).toFixed(4)) : 0;
+    const { diameter, avgPathLength } = computeDistanceStats(adj);
+
     return {
         nodeCount,
         edgeCount,
-        components: computeConnectedComponents(),
+        components: computeConnectedComponents(adj),
         averageDegree: nodeCount ? (edgeCount * 2 / nodeCount).toFixed(2) : "0.00",
         maxDegree,
-        isolated
+        isolated,
+        selfLoops,
+        density,
+        diameter,
+        avgPathLength
     };
 }
 
@@ -1018,6 +1081,7 @@ function renderAnalyticsPanel() {
         if (!s) {
             statsEl.innerHTML = "<em>No stats computed yet.</em>";
         } else {
+            const fmt = v => (v === null || v === undefined) ? "n/a" : v;
             statsEl.innerHTML = `
                 <div><strong>Nodes:</strong> ${s.nodeCount}</div>
                 <div><strong>Edges:</strong> ${s.edgeCount}</div>
@@ -1025,6 +1089,10 @@ function renderAnalyticsPanel() {
                 <div><strong>Average degree:</strong> ${s.averageDegree}</div>
                 <div><strong>Max degree:</strong> ${s.maxDegree}</div>
                 <div><strong>Isolated nodes:</strong> ${s.isolated}</div>
+                ${s.selfLoops !== undefined ? `<div><strong>Self-loops:</strong> ${s.selfLoops}</div>` : ""}
+                ${s.density !== undefined ? `<div><strong>Density:</strong> ${s.density}</div>` : ""}
+                ${"diameter" in s ? `<div><strong>Diameter:</strong> ${fmt(s.diameter)}</div>` : ""}
+                ${"avgPathLength" in s ? `<div><strong>Avg path length:</strong> ${fmt(s.avgPathLength)}</div>` : ""}
             `;
         }
     }
@@ -1546,7 +1614,7 @@ function parseCSVEdgeList(text) {
         if (!data.source || !data.target) return null;
         const directedVal = (data.directed || data.is_directed || data.oriented || "").toString().toLowerCase();
         const directed = directedVal === "true" || directedVal === "1" || directedVal === "yes";
-        return {
+        const edge = {
             id: data.id || `e${idx}`,
             source: data.source,
             target: data.target,
@@ -1555,6 +1623,10 @@ function parseCSVEdgeList(text) {
             width: parseFloat(data.width) || 2,
             directed
         };
+        // Preserve an explicit numeric weight for weighted shortest-path (round-trips buildCSV).
+        const weight = parseFloat(data.weight);
+        if (Number.isFinite(weight)) edge.weight = weight;
+        return edge;
     };
 
     const edgesFromCSV = rows
@@ -1599,30 +1671,43 @@ function parseGraphML(text) {
         }
         const dataX = parseFloat(n.querySelector("data[key='x']")?.textContent || "");
         const dataY = parseFloat(n.querySelector("data[key='y']")?.textContent || "");
-        nodesMap[id] = {
+        const node = {
             id,
             label,
             x: Number.isFinite(dataX) ? dataX : positions[id]?.x || 300 + idx * 30,
             y: Number.isFinite(dataY) ? dataY : positions[id]?.y || 300
         };
+        // Restore entity type / value / color when present (round-trips buildGraphML).
+        const rawType = n.querySelector("data[key='type']")?.textContent?.trim();
+        if (rawType && rawType !== "generic") node.entityType = rawType;
+        const rawValue = n.querySelector("data[key='value']")?.textContent?.trim();
+        if (rawValue) node.value = rawValue;
+        const rawColor = n.querySelector("data[key='color']")?.textContent?.trim();
+        if (rawColor) node.color = rawColor;
+        nodesMap[id] = node;
     });
 
     const edgesFromXml = edgesInFile.map((e, idx) => {
         const source = e.getAttribute("source");
         const target = e.getAttribute("target");
         if (!source || !target) return null;
-        const dataLabel = e.querySelector("data[key='label']") || e.querySelector("y\\:EdgeLabel");
+        const dataLabel = e.querySelector("data[key='label']") || e.querySelector("data[key='elabel']") || e.querySelector("y\\:EdgeLabel");
         const directedAttr = e.getAttribute("directed");
         const directed = directedAttr ? directedAttr === "true" : defaultDirected;
-        return {
+        const edge = {
             id: e.getAttribute("id") || `e${idx}`,
             source,
             target,
             label: dataLabel?.textContent?.trim() || "",
-            color: "#888888",
-            width: 2,
+            // Accept our own declared edge keys (ecolor/ewidth/eweight) and the
+            // plain names other GraphML tools may use.
+            color: (e.querySelector("data[key='ecolor']") || e.querySelector("data[key='color']"))?.textContent?.trim() || "#888888",
+            width: parseFloat((e.querySelector("data[key='ewidth']") || e.querySelector("data[key='width']"))?.textContent || "") || 2,
             directed
         };
+        const weight = parseFloat((e.querySelector("data[key='eweight']") || e.querySelector("data[key='weight']"))?.textContent || "");
+        if (Number.isFinite(weight)) edge.weight = weight;
+        return edge;
     }).filter(Boolean);
 
     return { nodes: nodesMap, edges: edgesFromXml, boxes: {} };
@@ -1748,6 +1833,8 @@ document.getElementById("load-file").addEventListener("change", e => {
                 graph = parseCSVEdgeList(reader.result);
             } else if (importFormat === "graphml") {
                 graph = parseGraphML(reader.result);
+            } else if (importFormat === "dot") {
+                graph = parseDot(reader.result);
             }
             if (!graph) throw new Error("Unable to parse file.");
             const merge = document.getElementById("import-merge")?.checked;
@@ -1768,6 +1855,16 @@ document.getElementById("load-file").addEventListener("change", e => {
     reader.readAsText(file);
 });
 
+// Build a context-rich export filename: node-mapper-[project-]YYYYMMDD-HHMM.ext
+function exportFilename(ext) {
+    const d = new Date();
+    const p = n => String(n).padStart(2, "0");
+    const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+    const rawName = (document.getElementById("project-name")?.value || "").trim();
+    const slug = rawName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    return `node-mapper${slug ? "-" + slug : ""}-${stamp}.${ext}`;
+}
+
 document.getElementById("export-graph").addEventListener("click", async () => {
     const format = document.getElementById("export-format").value;
     const scope = document.getElementById("export-scope")?.value || "content";
@@ -1775,30 +1872,38 @@ document.getElementById("export-graph").addEventListener("click", async () => {
     const graph = { nodes, edges, boxes, layers, activeLayerId, layoutSettings };
 
     if (format === "json") {
-        downloadBlob(new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" }), "graph.json");
+        downloadBlob(new Blob([JSON.stringify(graph, null, 2)], { type: "application/json" }), exportFilename("json"));
         return;
     }
     if (format === "csv") {
-        downloadBlob(new Blob([buildCSV()], { type: "text/csv" }), "graph-edges.csv");
+        downloadBlob(new Blob([buildCSV()], { type: "text/csv" }), exportFilename("csv"));
         return;
     }
     if (format === "graphml") {
-        downloadBlob(new Blob([buildGraphML()], { type: "application/xml" }), "graph.graphml");
+        downloadBlob(new Blob([buildGraphML()], { type: "application/xml" }), exportFilename("graphml"));
+        return;
+    }
+    if (format === "dot") {
+        downloadBlob(new Blob([buildDot()], { type: "text/vnd.graphviz" }), exportFilename("dot"));
+        return;
+    }
+    if (format === "markdown") {
+        downloadBlob(new Blob([buildMarkdown()], { type: "text/markdown" }), exportFilename("md"));
         return;
     }
     if (format === "report") {
-        downloadBlob(new Blob([buildReportHTML()], { type: "text/html" }), "graph-report.html");
+        downloadBlob(new Blob([buildReportHTML()], { type: "text/html" }), exportFilename("html"));
         return;
     }
 
     const { svg: svgCopy, width, height, background } = buildExportableSvg({ scope });
     const svgString = serializeSvgElement(svgCopy);
     if (format === "svg") {
-        downloadBlob(new Blob([svgString], { type: "image/svg+xml" }), "graph.svg");
+        downloadBlob(new Blob([svgString], { type: "image/svg+xml" }), exportFilename("svg"));
     } else if (format === "png") {
         try {
             const pngBlob = await svgStringToPngBlob(svgString, width, height, background, dpi);
-            downloadBlob(pngBlob, "graph.png");
+            downloadBlob(pngBlob, exportFilename("png"));
         } catch (err) {
             console.error("PNG export failed", err);
             alert("PNG export failed. Try SVG export instead.");
@@ -4392,19 +4497,36 @@ function buildGraphML() {
     let out = '<?xml version="1.0" encoding="UTF-8"?>\n<graphml xmlns="http://graphml.graphdrawing.org/xmlns">\n';
     out += '  <key id="label" for="node" attr.name="label" attr.type="string"/>\n';
     out += '  <key id="type" for="node" attr.name="type" attr.type="string"/>\n';
+    out += '  <key id="value" for="node" attr.name="value" attr.type="string"/>\n';
+    out += '  <key id="color" for="node" attr.name="color" attr.type="string"/>\n';
     out += '  <key id="x" for="node" attr.name="x" attr.type="double"/>\n  <key id="y" for="node" attr.name="y" attr.type="double"/>\n';
     out += '  <key id="elabel" for="edge" attr.name="label" attr.type="string"/>\n';
+    out += '  <key id="ecolor" for="edge" attr.name="color" attr.type="string"/>\n';
+    out += '  <key id="ewidth" for="edge" attr.name="width" attr.type="double"/>\n';
+    out += '  <key id="eweight" for="edge" attr.name="weight" attr.type="double"/>\n';
     out += '  <graph id="G" edgedefault="directed">\n';
     Object.values(nodes).forEach(n => {
-        out += `    <node id="${esc(n.id)}"><data key="label">${esc(n.label || n.value || n.id)}</data><data key="type">${esc(n.entityType || "generic")}</data><data key="x">${n.x}</data><data key="y">${n.y}</data></node>\n`;
+        out += `    <node id="${esc(n.id)}"><data key="label">${esc(n.label || n.value || n.id)}</data><data key="type">${esc(n.entityType || "generic")}</data><data key="value">${esc(n.value || "")}</data><data key="color">${esc(n.color || "")}</data><data key="x">${n.x}</data><data key="y">${n.y}</data></node>\n`;
     });
     edges.forEach((e, i) => {
-        out += `    <edge id="${esc(e.id || "e" + i)}" source="${esc(e.source)}" target="${esc(e.target)}"${e.directed ? ' directed="true"' : ""}><data key="elabel">${esc(e.label || "")}</data></edge>\n`;
+        const weightData = Number.isFinite(e.weight) ? `<data key="eweight">${e.weight}</data>` : "";
+        out += `    <edge id="${esc(e.id || "e" + i)}" source="${esc(e.source)}" target="${esc(e.target)}"${e.directed ? ' directed="true"' : ""}><data key="elabel">${esc(e.label || "")}</data><data key="ecolor">${esc(e.color || "#888888")}</data><data key="ewidth">${Number.isFinite(e.width) ? e.width : 2}</data>${weightData}</edge>\n`;
     });
     out += "  </graph>\n</graphml>\n";
     return out;
 }
+// Entity-type breakdown: { typeId: count } sorted desc, for reports/summaries.
+function entityTypeBreakdown() {
+    const counts = {};
+    Object.values(nodes).forEach(n => {
+        const t = n.entityType || "generic";
+        counts[t] = (counts[t] || 0) + 1;
+    });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+}
+
 function buildReportHTML() {
+    const esc = s => String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const stats = computeGraphStats();
     const { svg: svgCopy } = buildExportableSvg({ scope: "content" });
     const svgStr = serializeSvgElement(svgCopy);
@@ -4412,14 +4534,175 @@ function buildReportHTML() {
     Object.keys(nodes).forEach(id => { deg[id] = 0; });
     edges.forEach(e => { if (deg[e.source] != null) deg[e.source]++; if (deg[e.target] != null) deg[e.target]++; });
     const top = Object.values(nodes).sort((a, b) => (deg[b.id] || 0) - (deg[a.id] || 0)).slice(0, 10);
-    const rows = top.map(n => `<tr><td>${n.label || n.value || n.id}</td><td>${(getEntityType && getEntityType(n.entityType)?.name) || n.entityType || ""}</td><td>${deg[n.id] || 0}</td></tr>`).join("");
+    const rows = top.map(n => `<tr><td>${esc(n.label || n.value || n.id)}</td><td>${esc((getEntityType && getEntityType(n.entityType)?.name) || n.entityType || "")}</td><td>${deg[n.id] || 0}</td></tr>`).join("");
+    const typeName = t => esc((getEntityType && getEntityType(t)?.name) || t);
+    const typeRows = entityTypeBreakdown().map(([t, c]) => `<tr><td>${typeName(t)}</td><td>${c}</td></tr>`).join("");
+    const fmt = v => (v === null || v === undefined) ? "n/a" : v;
+    const generated = new Date().toLocaleString();
     return `<!doctype html><html><head><meta charset="utf-8"><title>Node Mapper Report</title>
-<style>body{font-family:system-ui,sans-serif;margin:24px;color:#0f172a}h1{margin-bottom:4px}table{border-collapse:collapse;margin-top:8px}td,th{border:1px solid #ddd;padding:4px 8px;text-align:left}svg{max-width:100%;border:1px solid #eee}</style></head>
+<style>
+:root{color-scheme:light dark}
+body{font-family:system-ui,sans-serif;margin:24px;color:#0f172a;background:#fff}
+h1{margin-bottom:4px}h2{margin-top:28px}
+.meta{color:#64748b;font-size:13px;margin:0 0 12px}
+table{border-collapse:collapse;margin-top:8px}
+td,th{border:1px solid #d0d7de;padding:4px 10px;text-align:left}
+th{background:#f1f5f9}
+svg{max-width:100%;border:1px solid #e2e8f0;border-radius:6px}
+@media (prefers-color-scheme:dark){
+body{color:#e2e8f0;background:#0f172a}
+td,th{border-color:#334155}th{background:#1e293b}
+svg{border-color:#334155}.meta{color:#94a3b8}
+}
+</style></head>
 <body><h1>Node Mapper — Investigation Report</h1>
-<p>Nodes: ${stats.nodeCount} · Edges: ${stats.edgeCount} · Components: ${stats.components} · Avg degree: ${stats.averageDegree} · Max degree: ${stats.maxDegree}</p>
+<p class="meta">Generated ${esc(generated)}</p>
+<p>Nodes: ${stats.nodeCount} · Edges: ${stats.edgeCount} · Components: ${stats.components} · Avg degree: ${stats.averageDegree} · Max degree: ${stats.maxDegree} · Density: ${stats.density} · Self-loops: ${stats.selfLoops} · Diameter: ${fmt(stats.diameter)} · Avg path: ${fmt(stats.avgPathLength)}</p>
 <h2>Graph</h2>${svgStr}
 <h2>Top entities by degree</h2><table><thead><tr><th>Entity</th><th>Type</th><th>Degree</th></tr></thead><tbody>${rows}</tbody></table>
+<h2>Entity type breakdown</h2><table><thead><tr><th>Type</th><th>Count</th></tr></thead><tbody>${typeRows}</tbody></table>
 </body></html>`;
+}
+
+// ---------- GRAPHVIZ DOT & MARKDOWN EXPORT ----------
+
+// Graphviz DOT. Node ids are quoted so uuids/special chars are safe. Directed
+// edges use `->`; if any edge is undirected the whole graph is emitted as `graph`
+// with `--` (DOT can't mix in one file), otherwise `digraph` with `->`.
+function buildDot() {
+    const q = s => '"' + String(s == null ? "" : s).replace(/\\/g, "\\\\").replace(/"/g, '\\"') + '"';
+    const anyUndirected = edges.some(e => !e.directed);
+    const directed = !anyUndirected;
+    const op = directed ? "->" : "--";
+    const lines = [];
+    lines.push((directed ? "digraph" : "graph") + " G {");
+    lines.push("  node [style=filled];");
+    Object.values(nodes).forEach(n => {
+        const label = n.label || n.value || n.id;
+        const attrs = [`label=${q(label)}`];
+        if (n.color) attrs.push(`fillcolor=${q(n.color)}`);
+        lines.push(`  ${q(n.id)} [${attrs.join(", ")}];`);
+    });
+    edges.forEach(e => {
+        const attrs = [];
+        if (e.label) attrs.push(`label=${q(e.label)}`);
+        if (e.color) attrs.push(`color=${q(e.color)}`);
+        const suffix = attrs.length ? ` [${attrs.join(", ")}]` : "";
+        lines.push(`  ${q(e.source)} ${op} ${q(e.target)}${suffix};`);
+    });
+    lines.push("}");
+    return lines.join("\n") + "\n";
+}
+
+// Minimal Graphviz DOT parser: reads node statements with optional [label=".."]
+// and edge statements `A -> B` / `A -- B` with optional [label=".."]. Enough to
+// round-trip buildDot and import simple hand-authored graphs.
+function parseDot(text) {
+    // Strip // and /* */ comments.
+    const clean = text.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
+    const directedDefault = /\bdigraph\b/.test(clean);
+    const body = clean.slice(clean.indexOf("{") + 1, clean.lastIndexOf("}"));
+    const stmts = body.split(";").map(s => s.trim()).filter(Boolean);
+
+    const nodesMap = {};
+    const parsedEdges = [];
+    const idRe = '(?:"((?:[^"\\\\]|\\\\.)*)"|([A-Za-z0-9_.]+))';
+    const attrOf = (seg, key) => {
+        const m = seg.match(new RegExp(key + '\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|([^,\\]\\s]+))', "i"));
+        return m ? (m[1] !== undefined ? m[1].replace(/\\"/g, '"') : m[2]) : null;
+    };
+    const ensureNode = id => {
+        if (!nodesMap[id]) nodesMap[id] = { id, label: id };
+        return nodesMap[id];
+    };
+    const edgeRe = new RegExp("^" + idRe + "\\s*(->|--)\\s*" + idRe + "(?:\\s*\\[([^\\]]*)\\])?", "");
+    const nodeRe = new RegExp("^" + idRe + "\\s*(?:\\[([^\\]]*)\\])?$", "");
+
+    stmts.forEach((stmt, idx) => {
+        // Skip graph-level attribute statements like `node [..]`, `rankdir=LR`.
+        if (/^(node|edge|graph)\b/i.test(stmt)) return;
+        const em = stmt.match(edgeRe);
+        if (em) {
+            const src = em[1] !== undefined ? em[1] : em[2];
+            const op = em[3];
+            const tgt = em[4] !== undefined ? em[4] : em[5];
+            const attrSeg = em[6] || "";
+            ensureNode(src); ensureNode(tgt);
+            const edge = { id: `e${idx}`, source: src, target: tgt, color: "#888888", width: 2, directed: op === "->" ? true : false };
+            const label = attrOf(attrSeg, "label");
+            if (label) edge.label = label;
+            const color = attrOf(attrSeg, "color");
+            if (color) edge.color = color;
+            parsedEdges.push(edge);
+            return;
+        }
+        const nm = stmt.match(nodeRe);
+        if (nm) {
+            const id = nm[1] !== undefined ? nm[1] : nm[2];
+            if (!id) return;
+            const node = ensureNode(id);
+            const attrSeg = nm[3] || "";
+            const label = attrOf(attrSeg, "label");
+            if (label) node.label = label;
+            const fill = attrOf(attrSeg, "fillcolor") || attrOf(attrSeg, "color");
+            if (fill) node.color = fill;
+        }
+    });
+
+    const ids = Object.keys(nodesMap);
+    if (!ids.length) return null;
+    const positions = assignCircularPositions(ids);
+    ids.forEach(id => {
+        nodesMap[id].x = positions[id].x;
+        nodesMap[id].y = positions[id].y;
+    });
+    return { nodes: nodesMap, edges: parsedEdges, boxes: {} };
+}
+
+// Markdown investigation report: summary + top entities + edge list.
+function buildMarkdown() {
+    const stats = computeGraphStats();
+    const fmt = v => (v === null || v === undefined) ? "n/a" : v;
+    const deg = {};
+    Object.keys(nodes).forEach(id => { deg[id] = 0; });
+    edges.forEach(e => { if (deg[e.source] != null) deg[e.source]++; if (deg[e.target] != null) deg[e.target]++; });
+    const labelOf = id => (nodes[id] && (nodes[id].label || nodes[id].value)) || id;
+    const typeOf = n => (getEntityType && getEntityType(n.entityType)?.name) || n.entityType || "";
+    const cell = s => String(s == null ? "" : s).replace(/\|/g, "\\|").replace(/\n/g, " ");
+    const top = Object.values(nodes).sort((a, b) => (deg[b.id] || 0) - (deg[a.id] || 0)).slice(0, 10);
+
+    const out = [];
+    out.push("# Node Mapper — Investigation Report");
+    out.push("");
+    out.push(`_Generated ${new Date().toLocaleString()}_`);
+    out.push("");
+    out.push("## Summary");
+    out.push("");
+    out.push("| Metric | Value |");
+    out.push("| --- | --- |");
+    out.push(`| Nodes | ${stats.nodeCount} |`);
+    out.push(`| Edges | ${stats.edgeCount} |`);
+    out.push(`| Components | ${stats.components} |`);
+    out.push(`| Average degree | ${stats.averageDegree} |`);
+    out.push(`| Max degree | ${stats.maxDegree} |`);
+    out.push(`| Density | ${stats.density} |`);
+    out.push(`| Self-loops | ${stats.selfLoops} |`);
+    out.push(`| Diameter | ${fmt(stats.diameter)} |`);
+    out.push(`| Avg path length | ${fmt(stats.avgPathLength)} |`);
+    out.push("");
+    out.push("## Top entities by degree");
+    out.push("");
+    out.push("| Entity | Type | Degree |");
+    out.push("| --- | --- | --- |");
+    top.forEach(n => out.push(`| ${cell(n.label || n.value || n.id)} | ${cell(typeOf(n))} | ${deg[n.id] || 0} |`));
+    out.push("");
+    out.push("## Edges");
+    out.push("");
+    out.push("| Source | Target | Label | Directed |");
+    out.push("| --- | --- | --- | --- |");
+    edges.forEach(e => out.push(`| ${cell(labelOf(e.source))} | ${cell(labelOf(e.target))} | ${cell(e.label || "")} | ${e.directed ? "yes" : "no"} |`));
+    out.push("");
+    return out.join("\n");
 }
 
 // ---------- MERGE-ON-IMPORT ----------

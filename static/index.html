@@ -91,6 +91,7 @@
                     <option value="json">Graph JSON (.json)</option>
                     <option value="csv">CSV edge list (.csv)</option>
                     <option value="graphml">GraphML (.graphml/.xml)</option>
+                    <option value="dot">Graphviz DOT (.dot/.gv)</option>
                 </select>
                 <label class="checkbox-inline">
                     <input id="import-merge" type="checkbox">
@@ -98,7 +99,7 @@
                 </label>
 
                 <label class="input-label" for="load-file">Choose file</label>
-                <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,text/csv">
+                <input type="file" id="load-file" accept=".json,.csv,.graphml,.xml,.dot,.gv,text/csv">
 
                 <div class="io-row">
                     <div class="io-col">
@@ -107,6 +108,8 @@
                             <option value="json">Graph JSON</option>
                             <option value="csv">CSV edge list</option>
                             <option value="graphml">GraphML</option>
+                            <option value="dot">Graphviz DOT</option>
+                            <option value="markdown">Markdown report</option>
                             <option value="svg">SVG</option>
                             <option value="png">PNG</option>
                             <option value="report">HTML report</option>

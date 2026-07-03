@@ -16,6 +16,7 @@ import queue
 import sqlite3
 import hashlib
 import threading
+from collections import deque
 from datetime import datetime, timezone
 from uuid import uuid4
 from heapq import heappop, heappush
@@ -42,6 +43,10 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.db")
 # Safety caps for the analytics endpoint (before running expensive algorithms).
 MAX_ANALYTICS_NODES = 20000
 MAX_ANALYTICS_EDGES = 100000
+
+# Diameter / average-path-length require an all-pairs BFS (O(V * (V + E))), so
+# they are only computed when the graph is small enough to stay responsive.
+MAX_DISTANCE_STATS_NODES = 1500
 
 
 def now_iso():
@@ -542,6 +547,68 @@ def compute_components(adj):
     return components
 
 
+def _count_self_loops(edges):
+    """Number of edges whose source and target are the same node."""
+    return sum(1 for e in edges if e.get("source") == e.get("target"))
+
+
+def compute_distance_stats(adj):
+    """Diameter and average shortest-path length over the largest component.
+
+    Uses unweighted BFS from every node in the largest connected component. Runs
+    only when the graph is small enough (see MAX_DISTANCE_STATS_NODES); returns
+    (None, None) otherwise so callers can render an "n/a" placeholder.
+    """
+    node_ids = list(adj.keys())
+    if len(node_ids) < 2 or len(node_ids) > MAX_DISTANCE_STATS_NODES:
+        return None, None
+
+    # Identify the largest connected component so disconnected pairs (which have
+    # infinite distance) do not poison the averages.
+    seen = set()
+    largest = []
+    for start in node_ids:
+        if start in seen:
+            continue
+        comp = []
+        stack = [start]
+        seen.add(start)
+        while stack:
+            node = stack.pop()
+            comp.append(node)
+            for nxt, _w, _e in adj[node]:
+                if nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        if len(comp) > len(largest):
+            largest = comp
+    if len(largest) < 2:
+        return None, None
+
+    comp_set = set(largest)
+    diameter = 0
+    total = 0
+    pairs = 0
+    for source in largest:
+        dist = {source: 0}
+        dq = deque([source])
+        while dq:
+            node = dq.popleft()
+            d = dist[node]
+            for nxt, _w, _e in adj[node]:
+                if nxt in comp_set and nxt not in dist:
+                    dist[nxt] = d + 1
+                    dq.append(nxt)
+        for target, d in dist.items():
+            if target == source:
+                continue
+            diameter = max(diameter, d)
+            total += d
+            pairs += 1
+    avg_path = round(total / pairs, 3) if pairs else None
+    return diameter, avg_path
+
+
 def compute_stats(graph):
     nodes = graph.get("nodes") or {}
     edges = graph.get("edges") or []
@@ -558,6 +625,10 @@ def compute_stats(graph):
 
     components = compute_components(adj) if node_count else 0
     avg_degree = (edge_count * 2 / node_count) if node_count else 0
+    # Density: fraction of the possible undirected edges that are present.
+    possible = node_count * (node_count - 1) / 2 if node_count > 1 else 0
+    density = round(edge_count / possible, 4) if possible else 0
+    diameter, avg_path = compute_distance_stats(adj)
     return {
         "nodeCount": node_count,
         "edgeCount": edge_count,
@@ -565,24 +636,28 @@ def compute_stats(graph):
         "averageDegree": round(avg_degree, 2),
         "maxDegree": max_degree,
         "isolated": isolated,
+        "selfLoops": _count_self_loops(edges),
+        "density": density,
+        "diameter": diameter,
+        "avgPathLength": avg_path,
     }
 
 
 def bfs_path(adj, start, end):
     if start not in adj or end not in adj:
         return None
-    queue = [start]
+    frontier = deque([start])
     visited = {start}
     parent = {}
-    while queue:
-        node = queue.pop(0)
+    while frontier:
+        node = frontier.popleft()
         if node == end:
             break
         for nxt, _, edge_id in adj[node]:
             if nxt not in visited:
                 visited.add(nxt)
                 parent[nxt] = (node, edge_id)
-                queue.append(nxt)
+                frontier.append(nxt)
     if end not in visited:
         return None
     node_path = []
@@ -654,6 +729,8 @@ def analytics():
     # Cap graph size before running pathfinding.
     nodes = graph.get("nodes") or {}
     edges = graph.get("edges") or []
+    if not isinstance(nodes, dict) or not isinstance(edges, list):
+        return json_error("Graph 'nodes' must be an object and 'edges' a list.", 400)
     if len(nodes) > MAX_ANALYTICS_NODES or len(edges) > MAX_ANALYTICS_EDGES:
         return json_error("Graph too large for server-side analytics.", 413)
 
@@ -722,14 +799,14 @@ def compute_betweenness(adj):
         dist = {n: -1 for n in nodes}
         sigma[s] = 1.0
         dist[s] = 0
-        queue = [s]
-        while queue:
-            v = queue.pop(0)
+        frontier = deque([s])
+        while frontier:
+            v = frontier.popleft()
             stack.append(v)
             for w, _weight, _edge_id in adj[v]:
                 if dist[w] < 0:
                     dist[w] = dist[v] + 1
-                    queue.append(w)
+                    frontier.append(w)
                 if dist[w] == dist[v] + 1:
                     sigma[w] += sigma[v]
                     pred[w].append(v)
@@ -820,6 +897,8 @@ def api_centrality():
     nodes = graph.get("nodes") or {}
     edges = graph.get("edges") or []
 
+    if not isinstance(nodes, dict) or not isinstance(edges, list):
+        return json_error("Graph 'nodes' must be an object and 'edges' a list.", 400)
     if len(nodes) > MAX_ANALYTICS_NODES or len(edges) > MAX_ANALYTICS_EDGES:
         return json_error("Graph too large for server-side analytics.", 413)
 
@@ -970,6 +1049,78 @@ def transform_whois(entity, params):
     return {"entities": entities, "links": links}
 
 
+def transform_reverse_ip(entity, params):
+    """ipv4 -> 1-2 synthetic domains that resolve to it (reverse DNS / PTR)."""
+    val = entity.get("value", "")
+    tlds = ["com", "net", "io", "org"]
+    words = ["acme", "globex", "initech", "umbrella", "hooli", "stark"]
+    count = 1 + (_seed_int(val, "revcount") % 2)  # 1 or 2
+    entities = []
+    for i in range(count):
+        word = words[_seed_int(val, f"revw{i}") % len(words)]
+        tld = tlds[_seed_int(val, f"revt{i}") % len(tlds)]
+        entities.append(_entity("domain", f"{word}.{tld}", {"resolvesTo": val}))
+    return {"entities": entities, "links": [_link("resolves_from") for _ in entities]}
+
+
+def transform_to_asn(entity, params):
+    """ipv4 -> the owning organization / ASN (synthetic)."""
+    val = entity.get("value", "")
+    orgs = [
+        "Cloudflare, Inc.", "Amazon.com, Inc.", "Google LLC", "Hetzner Online GmbH",
+        "OVH SAS", "DigitalOcean, LLC", "Akamai Technologies",
+    ]
+    org = orgs[_seed_int(val, "asnorg") % len(orgs)]
+    asn = 1000 + (_seed_int(val, "asn") % 64000)
+    entity_out = _entity(
+        "organization", org, {"asn": f"AS{asn}", "role": "network operator", "ip": val}
+    )
+    return {"entities": [entity_out], "links": [_link("announced_by")]}
+
+
+def transform_geolocate(entity, params):
+    """ipv4 -> an approximate geographic location (synthetic)."""
+    val = entity.get("value", "")
+    cities = [
+        ("San Francisco, US", 37.7749, -122.4194),
+        ("Ashburn, US", 39.0438, -77.4874),
+        ("Frankfurt, DE", 50.1109, 8.6821),
+        ("Amsterdam, NL", 52.3676, 4.9041),
+        ("Singapore, SG", 1.3521, 103.8198),
+        ("London, GB", 51.5074, -0.1278),
+    ]
+    name, lat, lon = cities[_seed_int(val, "geo") % len(cities)]
+    ent = _entity("location", name, {"lat": lat, "lon": lon, "ip": val})
+    return {"entities": [ent], "links": [_link("located_in")]}
+
+
+def transform_to_url(entity, params):
+    """domain -> 2 synthetic URLs served by that domain."""
+    val = entity.get("value", "")
+    paths = ["", "/login", "/about", "/api", "/admin", "/blog"]
+    start = _seed_int(val, "urlstart") % len(paths)
+    entities = []
+    for i in range(2):
+        path = paths[(start + i) % len(paths)]
+        entities.append(_entity("url", f"https://{val}{path}", {"host": val}))
+    return {"entities": entities, "links": [_link("hosts_url") for _ in entities]}
+
+
+def transform_person_to_social(entity, params):
+    """person -> 2-3 synthetic social-profile URLs."""
+    val = entity.get("value", "")
+    slug = "".join(c for c in val.lower() if c.isalnum()) or "user"
+    sites = ["linkedin.com/in", "twitter.com", "github.com", "facebook.com"]
+    count = 2 + (_seed_int(val, "soccount") % 2)  # 2 or 3
+    entities = []
+    for i in range(min(count, len(sites))):
+        site = sites[i]
+        entities.append(
+            _entity("url", f"https://{site}/{slug}", {"profileOf": val, "platform": site.split("/")[0]})
+        )
+    return {"entities": entities, "links": [_link("has_profile") for _ in entities]}
+
+
 # Registry: id -> metadata + runner. input_types declares applicable entity types.
 TRANSFORMS = {
     "to_ip": {
@@ -1001,6 +1152,36 @@ TRANSFORMS = {
         "description": "Return a synthetic registrant person and phone for a domain.",
         "input_types": ["domain"],
         "run": transform_whois,
+    },
+    "reverse_ip": {
+        "name": "Reverse IP",
+        "description": "Find synthetic domains that resolve to an IPv4 address.",
+        "input_types": ["ipv4"],
+        "run": transform_reverse_ip,
+    },
+    "to_asn": {
+        "name": "IP → Organization (ASN)",
+        "description": "Identify the synthetic network operator / ASN owning an IPv4.",
+        "input_types": ["ipv4"],
+        "run": transform_to_asn,
+    },
+    "geolocate": {
+        "name": "Geolocate IP",
+        "description": "Return an approximate synthetic location for an IPv4 address.",
+        "input_types": ["ipv4"],
+        "run": transform_geolocate,
+    },
+    "to_url": {
+        "name": "Domain → URLs",
+        "description": "Enumerate synthetic URLs hosted on a domain.",
+        "input_types": ["domain"],
+        "run": transform_to_url,
+    },
+    "person_to_social": {
+        "name": "Person → Social Profiles",
+        "description": "Discover synthetic social-media profile URLs for a person.",
+        "input_types": ["person"],
+        "run": transform_person_to_social,
     },
 }
 

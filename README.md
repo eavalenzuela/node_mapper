@@ -15,7 +15,7 @@ A lightweight Flask app that serves an in-browser graph editor. The editor lets 
 - **Autosave and file I/O:** LocalStorage autosave plus export/import of graph JSON files, including layout settings and routing preferences.
 - **Mini-map:** Overview map that reflects the current viewport and can re-center the main canvas.
 - **Analytics:** Sidebar tools to compute graph metrics and find shortest paths (BFS or Dijkstra), with optional server-side computation for very large graphs.
-- **Import/Export formats:** Load graphs from JSON, CSV edge lists, or GraphML; export to JSON, SVG, or PNG directly from the UI.
+- **Import/Export formats:** Load graphs from JSON, CSV edge lists, GraphML, or Graphviz DOT; export to JSON, CSV, GraphML, Graphviz DOT, Markdown/HTML reports, SVG, or PNG directly from the UI.
 
 ![path_trace](path_tracing_stats.png)
 
@@ -56,7 +56,16 @@ Use the **Import / Export** section in the sidebar to choose a format, select a 
     </graph>
   </graphml>
   ```
-- **SVG / PNG:** Exports use the current SVG canvas (`#graphCanvas`) so visuals match what you see (including themes, labels, and routing).
+- **Graphviz DOT:** Import/export basic DOT. Export emits `digraph`/`graph` with node labels/fill colors and edge labels/colors; import reads `A -> B [label="…"]` (directed) and `A -- B` (undirected) statements, skipping graph-level attributes.
+  ```dot
+  digraph G {
+    "A" [label="Service A"];
+    "A" -> "B" [label="Calls"];
+  }
+  ```
+- **Markdown report:** A paste-ready `.md` summary — graph metrics, top entities by degree, and the full edge list as Markdown tables.
+- **SVG / PNG / HTML report:** Exports use the current SVG canvas (`#graphCanvas`) so visuals match what you see (including themes, labels, and routing). The HTML report adds a timestamp, summary metrics, top-entities and entity-type-breakdown tables, and is light/dark aware.
+- **Filenames:** Downloads are named `node-mapper-[project-]YYYYMMDD-HHMM.ext` using the current project name when set.
 
 ## Running locally
 1. Install Python 3.10+ and create a virtual environment:
@@ -79,7 +88,7 @@ The server uses an in-memory graph (`GRAPH` in `node_mapper.py`). Data is not pe
 ## Link-analysis features
 Beyond plain diagramming, Node Mapper now works as a lightweight link-analysis tool:
 - **Typed entities:** every node is an instance of an entity type defined in `static/entities.js` (250+ types), each with an icon, color, default shape, a primary `value`, and a typed property schema. The library spans OSINT/identity/network plus **program & data flow** (UML structural & behavioral, flowchart, DFD) and **cloud environments** — compute/serverless (Lambda, EC2, containers), storage & data (S3, RDS, DynamoDB, queues/streams), networking (VPC, subnets, IGW, NAT/VPN/Transit gateways, load balancers, Route53, API Gateway, WAF), Kubernetes (pods, deployments, services, ingress…), IAM/security, DevOps, and observability. Drag a type from the categorized, searchable **Entity Palette**, or change a node's type in the property editor (with advisory value validation).
-- **Transforms:** right-click an entity (or use the **Transforms** tab) to run a transform that queries the server and expands the graph with new connected entities. Results merge additively, de-duplicate by type+value, and are tagged with provenance. Demo transforms run offline (synthetic data) via `/api/transform`.
+- **Transforms:** right-click an entity (or use the **Transforms** tab) to run a transform that queries the server and expands the graph with new connected entities. Results merge additively, de-duplicate by type+value, and are tagged with provenance. Demo transforms run offline (synthetic data) via `/api/transform` and cover domain/host → IP, emails, subdomains, URLs, WHOIS; IPv4 → ports, reverse-IP domains, owning organization/ASN, and geolocation; and person → emails and social-profile URLs.
 - **Centrality & communities:** the **Analytics** tab computes degree / betweenness / closeness / PageRank with a ranked table, plus label-propagation communities. The **View** tab can color/size nodes by any metric or by community (data-driven encoding), with an on-canvas legend.
 - **Investigation workflow:** marquee select, copy/paste/duplicate, group/ungroup, double-click rename, right-click context menus, N-hop neighborhood selection, shortest paths by clicking endpoints, and pinned nodes excluded from layouts.
 - **Projects & collaboration:** save named projects/cases to the server (SQLite) with version history, optional account login, and autosave. Anonymous use keeps working without an account.
@@ -99,7 +108,7 @@ Set `FLASK_DEBUG=1` to enable the dev debugger (off by default); `HOST`/`PORT` o
 - Python (server analytics, centrality, transforms, projects): `pip install pytest && python -m pytest -q tests`.
 
 ## Analytics
-- Use the **Analytics** panel in the sidebar to compute node/edge counts, component counts, average/max degree, and isolated node totals.
+- Use the **Analytics** panel in the sidebar to compute node/edge counts, component counts, average/max degree, isolated node totals, graph **density**, **self-loop** counts, and (for small graphs) the **diameter** and **average shortest-path length** of the largest component. The same metrics are mirrored by the server `/analytics` endpoint for large graphs.
 - Enter two node IDs to run **Find path A→B** using BFS (unweighted) or Dijkstra (weighted) shortest paths; paths highlight on the canvas.
 - For large graphs (default: 500+ nodes), analytics requests automatically fall back to the Flask `/analytics` endpoint to avoid blocking the browser.
 

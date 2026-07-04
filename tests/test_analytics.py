@@ -109,6 +109,75 @@ def test_centrality_rejects_bad_edges():
     assert r.status_code == 400
 
 
+def test_centrality_survives_null_weight_and_nondict_edge():
+    # A present-but-null weight, a non-dict edge, and a non-numeric width must
+    # not raise a 500 out of build_adjacency.
+    graph = {
+        "nodes": {"a": {"id": "a"}, "b": {"id": "b"}},
+        "edges": [
+            {"source": "a", "target": "b", "weight": None},
+            "x",
+            {"source": "a", "target": "b", "width": "abc"},
+        ],
+    }
+    r = client().post("/api/centrality", json={"graph": graph})
+    assert r.status_code == 200
+
+
+def test_analytics_survives_nondict_edge():
+    graph = {"nodes": {"a": {"id": "a"}, "b": {"id": "b"}}, "edges": ["x", {"source": "a", "target": "b"}]}
+    r = client().post("/analytics", json={"graph": graph})
+    assert r.status_code == 200
+    assert r.get_json()["stats"]["edgeCount"] == 2
+
+
+# --- Centrality alignment with the client implementation --------------------
+
+def test_centrality_betweenness_undirected_halved():
+    # Undirected betweenness on the a-b-c chain: broker b == 1.0 (raw Brandes 2.0
+    # halved), matching the client's /2 correction.
+    m = client().post("/api/centrality", json={"graph": SAMPLE}).get_json()["metrics"]
+    assert m["b"]["betweenness"] == 1.0
+    assert m["a"]["betweenness"] == 0.0
+
+
+def test_centrality_closeness_ignores_edge_width():
+    # Closeness is unweighted (hop counts) on both server and client, so the
+    # broker b stays equidistant to both leaves regardless of differing widths.
+    graph = {
+        "nodes": {"a": {"id": "a"}, "b": {"id": "b"}, "c": {"id": "c"}},
+        "edges": [
+            {"source": "a", "target": "b", "width": 9},
+            {"source": "b", "target": "c", "width": 1},
+        ],
+    }
+    m = client().post("/api/centrality", json={"graph": graph}).get_json()["metrics"]
+    assert round(m["b"]["closeness"], 3) == 1.0
+
+
+# --- Anonymous project isolation -------------------------------------------
+
+def test_anonymous_projects_are_scoped_per_session():
+    a = client()
+    b = client()
+    pid = a.post("/api/projects", json={"name": "SecretA", "graph": SAMPLE}).get_json()["id"]
+    # A different anonymous session must not list, read or delete A's project.
+    b_ids = {p["id"] for p in b.get("/api/projects").get_json()["projects"]}
+    assert pid not in b_ids
+    assert b.get(f"/api/projects/{pid}").status_code in (403, 404)
+    assert b.delete(f"/api/projects/{pid}").status_code in (403, 404)
+    # A can still reach its own project.
+    assert a.get(f"/api/projects/{pid}").status_code == 200
+
+
+def test_geolocate_emits_lng_for_map():
+    # The map view reads properties.lng; the transform must emit 'lng', not 'lon'.
+    r = client().post("/api/transform", json={"transformId": "geolocate", "entity": {"type": "ipv4", "value": "8.8.8.8"}})
+    props = r.get_json()["entities"][0]["properties"]
+    assert "lng" in props
+    assert "lon" not in props
+
+
 # --- New transforms ---------------------------------------------------------
 
 def test_new_transforms_are_listed():

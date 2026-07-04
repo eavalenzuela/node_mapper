@@ -13,6 +13,7 @@ deterministic data so the application works fully offline.
 import os
 import json
 import queue
+import secrets
 import sqlite3
 import hashlib
 import threading
@@ -35,7 +36,14 @@ app = Flask(__name__, static_folder="static")
 app.config["MAX_CONTENT_LENGTH"] = 8 * 1024 * 1024
 
 # Secret key for signed session cookies. Override in production via env.
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-insecure-change-me")
+# We deliberately DO NOT ship a fixed fallback: a published constant would let
+# anyone forge a validly-signed session cookie and impersonate any account. When
+# SECRET_KEY is unset we mint a random per-process key instead; the trade-off is
+# that existing sessions do not survive a restart.
+_secret_key = os.environ.get("SECRET_KEY")
+if not _secret_key:
+    _secret_key = secrets.token_hex(32)
+app.config["SECRET_KEY"] = _secret_key
 
 # Path to the SQLite database, kept next to this script.
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.db")
@@ -153,12 +161,17 @@ def init_db():
                 id INTEGER PRIMARY KEY,
                 name TEXT,
                 owner_id INTEGER,
+                owner_token TEXT,
                 data_json TEXT,
                 created_at TEXT,
                 updated_at TEXT
             )
             """
         )
+        # Migrate older databases that predate per-session anonymous scoping.
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(projects)").fetchall()}
+        if "owner_token" not in cols:
+            conn.execute("ALTER TABLE projects ADD COLUMN owner_token TEXT")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS project_versions (
@@ -181,6 +194,21 @@ def init_db():
 def current_user_id():
     """Return the logged-in user's id, or None for anonymous sessions."""
     return session.get("user_id")
+
+
+def current_owner_token():
+    """Stable per-session token identifying an anonymous owner.
+
+    Authenticated users are scoped by their user_id and never need a token. For
+    anonymous sessions we mint a random token (persisted in the signed session
+    cookie) so distinct anonymous visitors cannot read, edit or delete each
+    other's projects — previously every anonymous visitor shared one pool.
+    """
+    tok = session.get("owner_token")
+    if not tok:
+        tok = secrets.token_hex(16)
+        session["owner_token"] = tok
+    return tok
 
 
 def _user_public(row):
@@ -261,10 +289,11 @@ def _owner_filter_clause(uid):
     """SQL fragment + params restricting rows to the current visibility scope.
 
     Authenticated users see only their own projects; anonymous sessions see
-    only projects with a NULL owner.
+    only the anonymous projects created within their own session (scoped by a
+    per-session owner_token), not every anonymous project.
     """
     if uid is None:
-        return "owner_id IS NULL", ()
+        return "owner_id IS NULL AND owner_token = ?", (current_owner_token(),)
     return "owner_id = ?", (uid,)
 
 
@@ -285,8 +314,8 @@ def _load_project_for_access(project_id, uid, require_owner=False):
 
     owner_id = row["owner_id"]
     if uid is None:
-        # Anonymous: may only touch anonymous-owned projects.
-        if owner_id is not None:
+        # Anonymous: may only touch anonymous projects created in THIS session.
+        if owner_id is not None or row["owner_token"] != current_owner_token():
             return None, json_error("Not authorized for this project.", 403)
     else:
         # Authenticated: may only touch own projects.
@@ -330,12 +359,15 @@ def create_project():
     data_json = json.dumps(graph)
     ts = now_iso()
     uid = current_user_id()
+    # Anonymous projects are scoped to the creating session; authenticated
+    # projects are scoped by owner_id and leave owner_token NULL.
+    owner_token = None if uid is not None else current_owner_token()
 
     db = get_db()
     cur = db.execute(
-        "INSERT INTO projects (name, owner_id, data_json, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (name, uid, data_json, ts, ts),
+        "INSERT INTO projects (name, owner_id, owner_token, data_json, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (name, uid, owner_token, data_json, ts, ts),
     )
     project_id = cur.lastrowid
     _insert_version(db, project_id, data_json)
@@ -516,12 +548,26 @@ def project_stream(project_id):
 def build_adjacency(nodes, edges, weighted=True, directed=True):
     adj = {node_id: [] for node_id in nodes.keys()}
     for idx, edge in enumerate(edges):
+        if not isinstance(edge, dict):
+            continue
         src = edge.get("source")
         tgt = edge.get("target")
         if src not in adj or tgt not in adj:
             continue
-        weight = edge.get("weight", edge.get("width", 1)) if weighted else 1
-        weight = max(float(weight), 0.0001)
+        if weighted:
+            # dict.get only substitutes the default for a MISSING key, so a
+            # present-but-null weight would yield None; coerce defensively and
+            # fall back to width, then 1, rather than raising on bad input.
+            raw = edge.get("weight")
+            if raw is None:
+                raw = edge.get("width", 1)
+            try:
+                weight = float(raw)
+            except (TypeError, ValueError):
+                weight = 1.0
+        else:
+            weight = 1.0
+        weight = max(weight, 0.0001)
         edge_id = edge.get("id") or f"e{idx}"
         adj[src].append((tgt, weight, edge_id))
         if not directed or not edge.get("directed"):
@@ -549,7 +595,7 @@ def compute_components(adj):
 
 def _count_self_loops(edges):
     """Number of edges whose source and target are the same node."""
-    return sum(1 for e in edges if e.get("source") == e.get("target"))
+    return sum(1 for e in edges if isinstance(e, dict) and e.get("source") == e.get("target"))
 
 
 def compute_distance_stats(adj):
@@ -916,6 +962,8 @@ def api_centrality():
     in_degree = {n: 0 for n in node_ids}
     out_degree = {n: 0 for n in node_ids}
     for edge in edges:
+        if not isinstance(edge, dict):
+            continue
         src = edge.get("source")
         tgt = edge.get("target")
         if src in out_degree:
@@ -924,6 +972,11 @@ def api_centrality():
             in_degree[tgt] += 1
 
     betweenness = compute_betweenness(undirected_unweighted)
+    # The graph is scored as undirected here, so each shortest path is counted
+    # from both endpoints; halve to match the standard undirected definition
+    # (and the client-side implementation) so scores don't jump at the
+    # server/client threshold.
+    betweenness = {n: b / 2.0 for n, b in betweenness.items()}
     pagerank = compute_pagerank(directed_adj)
     communities = detect_communities(undirected_adj)
 
@@ -934,7 +987,9 @@ def api_centrality():
             "degree": total_degree,
             "inDegree": in_degree[n],
             "outDegree": out_degree[n],
-            "closeness": round(_closeness_for_node(undirected_adj, n), 6),
+            # Unweighted (hop-count) closeness, matching the client's BFS so
+            # values/rankings agree on both sides of the analytics threshold.
+            "closeness": round(_closeness_for_node(undirected_unweighted, n), 6),
             "betweenness": round(betweenness.get(n, 0.0), 6),
             "pagerank": round(pagerank.get(n, 0.0), 6),
         }
@@ -1090,7 +1145,9 @@ def transform_geolocate(entity, params):
         ("London, GB", 51.5074, -0.1278),
     ]
     name, lat, lon = cities[_seed_int(val, "geo") % len(cities)]
-    ent = _entity("location", name, {"lat": lat, "lon": lon, "ip": val})
+    # Use 'lng' (the Location entity schema key the map view reads), not 'lon',
+    # so transform-created Location nodes actually render on the map.
+    ent = _entity("location", name, {"lat": lat, "lng": lon, "ip": val})
     return {"entities": [ent], "links": [_link("located_in")]}
 
 

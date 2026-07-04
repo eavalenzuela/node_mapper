@@ -1595,15 +1595,47 @@ function assignCircularPositions(nodeIds) {
     return positioned;
 }
 
-function parseCSVEdgeList(text) {
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    if (!lines.length) return null;
+// RFC-4180-aware CSV reader: returns an array of records (each an array of
+// field strings), honouring double-quoted fields with embedded commas,
+// newlines and "" escapes. Mirrors csvEscape() so the app's own export
+// re-imports losslessly.
+function parseCSVRecords(text) {
+    const records = [];
+    let field = "";
+    let record = [];
+    let inQuotes = false;
+    let fieldStart = true; // a quote only opens a quoted field at the field's start
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i];
+        if (inQuotes) {
+            if (ch === '"') {
+                if (text[i + 1] === '"') { field += '"'; i++; } // escaped quote
+                else inQuotes = false;
+            } else {
+                field += ch;
+            }
+            continue;
+        }
+        if (ch === '"' && fieldStart) { inQuotes = true; fieldStart = false; continue; }
+        if (ch === ',') { record.push(field); field = ""; fieldStart = true; continue; }
+        if (ch === '\r') { continue; }
+        if (ch === '\n') { record.push(field); records.push(record); field = ""; record = []; fieldStart = true; continue; }
+        field += ch; fieldStart = false;
+    }
+    if (inQuotes || field !== "" || record.length) { record.push(field); records.push(record); }
+    return records;
+}
 
-    const splitLine = line => line.split(",").map(s => s.trim());
-    const headerCells = splitLine(lines[0]).map(h => h.toLowerCase());
+function parseCSVEdgeList(text) {
+    const records = parseCSVRecords(text)
+        .map(cells => cells.map(s => s.trim()))
+        .filter(cells => cells.some(Boolean)); // drop blank lines
+    if (!records.length) return null;
+
+    const headerCells = records[0].map(h => h.toLowerCase());
     const hasHeader = headerCells.includes("source") && headerCells.includes("target");
 
-    const rows = hasHeader ? lines.slice(1) : lines;
+    const rows = hasHeader ? records.slice(1) : records;
     const cellsToEdge = (cells, idx) => {
         const data = hasHeader ? headerCells.reduce((acc, key, i) => ({ ...acc, [key]: cells[i] }), {}) : {};
         if (!hasHeader) {
@@ -1630,7 +1662,7 @@ function parseCSVEdgeList(text) {
     };
 
     const edgesFromCSV = rows
-        .map((line, idx) => cellsToEdge(splitLine(line), idx))
+        .map((cells, idx) => cellsToEdge(cells, idx))
         .filter(Boolean);
     const nodeIds = new Set();
     edgesFromCSV.forEach(e => {
@@ -4185,7 +4217,13 @@ function computeCentralityClient() {
     ids.forEach(id => { metrics[id].betweenness /= 2; });
     // PageRank (power iteration over directed out-links)
     const outAdj = {}; ids.forEach(id => { outAdj[id] = []; });
-    edges.forEach(e => { if (outAdj[e.source] && nodes[e.target]) outAdj[e.source].push(e.target); });
+    edges.forEach(e => {
+        if (!outAdj[e.source] || !nodes[e.target]) return;
+        outAdj[e.source].push(e.target);
+        // Honour the `directed` flag: undirected edges are bidirectional links,
+        // matching the server's PageRank adjacency so scores/rankings agree.
+        if (!e.directed) outAdj[e.target].push(e.source);
+    });
     const N = ids.length || 1;
     let pr = {}; ids.forEach(id => { pr[id] = 1 / N; });
     const d = 0.85;
@@ -4251,13 +4289,32 @@ function renderRankTable() {
     if (!rows.length) { wrap.innerHTML = '<small class="muted">Compute centrality to rank entities.</small>'; return; }
     rows.sort((a, b) => b.v - a.v);
     const top = rows.slice(0, 15);
-    let html = `<table class="rank-table"><thead><tr><th>#</th><th>Entity</th><th>${metric}</th></tr></thead><tbody>`;
+    // Build via DOM (textContent/dataset) rather than an innerHTML string: node
+    // labels/values/ids are attacker-controlled (imports, editor) and would
+    // otherwise be a stored-XSS sink.
+    const table = document.createElement("table");
+    table.className = "rank-table";
+    const thead = document.createElement("thead");
+    const htr = document.createElement("tr");
+    ["#", "Entity", metric].forEach(h => { const th = document.createElement("th"); th.textContent = h; htr.appendChild(th); });
+    thead.appendChild(htr);
+    table.appendChild(thead);
+    const tbody = document.createElement("tbody");
     top.forEach((r, i) => {
         const v = metric === "pagerank" || metric === "closeness" ? r.v.toFixed(3) : (metric === "betweenness" ? r.v.toFixed(1) : r.v);
-        html += `<tr class="clickable" data-node="${r.n.id}"><td>${i + 1}</td><td>${(r.n.label || r.n.value || r.n.id)}</td><td>${v}</td></tr>`;
+        const tr = document.createElement("tr");
+        tr.className = "clickable";
+        tr.dataset.node = r.n.id;
+        [String(i + 1), (r.n.label || r.n.value || r.n.id), String(v)].forEach(text => {
+            const td = document.createElement("td");
+            td.textContent = text;
+            tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
     });
-    html += "</tbody></table>";
-    wrap.innerHTML = html;
+    table.appendChild(tbody);
+    wrap.innerHTML = "";
+    wrap.appendChild(table);
     wrap.querySelectorAll("tr.clickable").forEach(tr => {
         tr.addEventListener("click", () => { const id = tr.dataset.node; if (nodes[id]) { selectNode(id); centerOnNode(id); render(); } });
     });
@@ -4427,7 +4484,7 @@ async function saveProject() {
         } else {
             await fetch(`/api/projects/${currentProjectId}`, {
                 method: "PUT", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ name, graph: currentGraphPayload() })
+                body: JSON.stringify({ name, graph: currentGraphPayload(), clientId: MY_CLIENT_ID })
             });
         }
         refreshProjects();

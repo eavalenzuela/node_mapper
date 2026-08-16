@@ -1,0 +1,13 @@
+# Local run: docker compose up -d --build  ->  http://localhost:5000
+services:
+  node-mapper:
+    build: .
+    container_name: node-mapper
+    ports:
+      - "5000:5000"
+    volumes:
+      # DB_PATH is hardcoded beside node_mapper.py, so the only way to persist
+      # sqlite state without patching the app is to bind-mount the file itself.
+      # graph.db is gitignored, so writes here never dirty the repo.
+      - ./graph.db:/app/graph.db
+    restart: unless-stopped

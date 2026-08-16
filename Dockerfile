@@ -4,7 +4,10 @@ WORKDIR /app
 
 # Deps first so app edits don't bust the pip layer.
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip first: python:3.12-slim ships 25.0.1, which carries six advisories
+# (PYSEC-2026-196, -1795, -1796, -2875, -2876). Build-time only, but it stays in
+# the image and shows up in scans.
+RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
 COPY node_mapper.py ./
 COPY static ./static

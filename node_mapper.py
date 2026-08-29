@@ -14,29 +14,29 @@ flagged synthetic in the listing and in every response. Only tcp_scan touches
 the subject, and only when NM_ACTIVE_SCAN=1.
 """
 
-import os
-import re
-import json
-import time
-import queue
-import socket
-import secrets
-import sqlite3
+import contextlib
 import hashlib
 import ipaddress
+import json
+import os
+import queue
+import re
+import secrets
+import socket
+import sqlite3
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict, deque
 from concurrent import futures
-from collections import deque, OrderedDict
 from datetime import datetime, timezone
-from uuid import uuid4
 from heapq import heappop, heappush
+from uuid import uuid4
 
-from flask import Flask, jsonify, request, send_from_directory, session, g, Response
-from werkzeug.security import generate_password_hash, check_password_hash
-
+from flask import Flask, Response, g, jsonify, request, send_from_directory, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 # ============================================================================
 # App configuration & security hardening
@@ -350,8 +350,8 @@ def list_projects():
     where, params = _owner_filter_clause(uid)
     db = get_db()
     rows = db.execute(
-        "SELECT id, name, updated_at FROM projects WHERE %s "
-        "ORDER BY updated_at DESC" % where,
+        f"SELECT id, name, updated_at FROM projects WHERE {where} "
+        "ORDER BY updated_at DESC",
         params,
     ).fetchall()
     projects = [
@@ -507,10 +507,8 @@ def _publish(project_id, event):
     with _sub_lock:
         subs = list(_subscribers.get(project_id, set()))
     for q in subs:
-        try:
+        with contextlib.suppress(queue.Full):
             q.put_nowait(event)
-        except queue.Full:
-            pass
 
 
 def _presence_count(project_id):
@@ -558,7 +556,7 @@ def project_stream(project_id):
 # ============================================================================
 
 def build_adjacency(nodes, edges, weighted=True, directed=True):
-    adj = {node_id: [] for node_id in nodes.keys()}
+    adj = {node_id: [] for node_id in nodes}
     for idx, edge in enumerate(edges):
         if not isinstance(edge, dict):
             continue
@@ -590,7 +588,7 @@ def build_adjacency(nodes, edges, weighted=True, directed=True):
 def compute_components(adj):
     visited = set()
     components = 0
-    for start in adj.keys():
+    for start in adj:
         if start in visited:
             continue
         components += 1
@@ -675,7 +673,7 @@ def compute_stats(graph):
     edge_count = len(edges)
     max_degree = 0
     isolated = 0
-    for node_id, neighbors in adj.items():
+    for _node_id, neighbors in adj.items():
         degree = len(neighbors)
         max_degree = max(max_degree, degree)
         if degree == 0:
@@ -736,7 +734,7 @@ def bfs_path(adj, start, end):
 def dijkstra_path(adj, start, end):
     if start not in adj or end not in adj:
         return None
-    dist = {node: float("inf") for node in adj.keys()}
+    dist = {node: float("inf") for node in adj}
     prev = {}
     dist[start] = 0.0
     heap = [(0.0, start)]
@@ -821,7 +819,7 @@ def analytics():
 def _closeness_for_node(adj, source):
     """Single-source shortest-path closeness using the heap pattern from
     dijkstra_path. Returns closeness centrality (0 if unreachable/alone)."""
-    dist = {node: float("inf") for node in adj.keys()}
+    dist = {node: float("inf") for node in adj}
     dist[source] = 0.0
     heap = [(0.0, source)]
     while heap:
@@ -913,7 +911,7 @@ def detect_communities(adj, iterations=20):
 
     Returns {nodeId: communityIndex} with contiguous integer indices.
     """
-    labels = {node: node for node in adj.keys()}
+    labels = {node: node for node in adj}
     nodes = sorted(adj.keys())
 
     for _ in range(iterations):
@@ -1125,18 +1123,19 @@ def _fetch_json(url, timeout=None, allow_404=False):
         if exc.code == 404 and allow_404:
             _cache_put(url, (None,))
             return None
-        raise TransformSourceError("%s returned HTTP %s." % (_source_label(url), exc.code))
-    except (urllib.error.URLError, socket.timeout, OSError) as exc:
+        raise TransformSourceError(f"{_source_label(url)} returned HTTP {exc.code}.") from None
+    except (TimeoutError, urllib.error.URLError, OSError) as exc:
         reason = getattr(exc, "reason", None) or exc.__class__.__name__
-        raise TransformSourceError("%s is unreachable (%s)." % (_source_label(url), reason))
+        raise TransformSourceError(f"{_source_label(url)} is unreachable ({reason}).") from None
 
     if len(raw) > MAX_LOOKUP_BYTES:
         raise TransformSourceError(
-            "%s returned more than %d KiB." % (_source_label(url), MAX_LOOKUP_BYTES // 1024))
+            f"{_source_label(url)} returned more than {MAX_LOOKUP_BYTES // 1024} KiB.")
     try:
         data = json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
-        raise TransformSourceError("%s returned a non-JSON response." % _source_label(url))
+        raise TransformSourceError(
+            f"{_source_label(url)} returned a non-JSON response.") from None
 
     _cache_put(url, (data,))
     return data
@@ -1166,12 +1165,12 @@ def _clean_hostname(value):
     try:
         text = text.encode("idna").decode("ascii")
     except (UnicodeError, UnicodeDecodeError):
-        raise TransformInputError("%r is not a valid hostname." % str(value)[:80])
+        raise TransformInputError(f"{str(value)[:80]!r} is not a valid hostname.") from None
     if not _HOSTNAME_RE.match(text):
-        raise TransformInputError("%r is not a valid public hostname." % str(value)[:80])
+        raise TransformInputError(f"{str(value)[:80]!r} is not a valid public hostname.")
     if text.endswith(_INTERNAL_SUFFIXES):
         raise TransformInputError(
-            "%s is an internal name; no public source can resolve it." % text)
+            f"{text} is an internal name; no public source can resolve it.")
     return text
 
 
@@ -1180,12 +1179,12 @@ def _public_ip(value):
     try:
         addr = ipaddress.ip_address(str(value or "").strip())
     except ValueError:
-        raise TransformInputError("%r is not an IP address." % str(value)[:80])
+        raise TransformInputError(f"{str(value)[:80]!r} is not an IP address.") from None
     # is_global already excludes private, loopback, link-local and reserved
     # ranges; multicast is checked separately because it is global-but-useless.
     if not addr.is_global or addr.is_multicast:
         raise TransformInputError(
-            "%s is not a public address -- refusing to send it to a third-party source." % addr)
+            f"{addr} is not a public address -- refusing to send it to a third-party source.")
     return str(addr)
 
 
@@ -1195,9 +1194,9 @@ def _scan_target(value):
     try:
         addr = ipaddress.ip_address(str(value or "").strip())
     except ValueError:
-        raise TransformInputError("%r is not an IP address." % str(value)[:80])
+        raise TransformInputError(f"{str(value)[:80]!r} is not an IP address.") from None
     if addr.is_multicast or addr.is_unspecified:
-        raise TransformInputError("%s is not a scannable host address." % addr)
+        raise TransformInputError(f"{addr} is not a scannable host address.")
     return str(addr)
 
 
@@ -1324,9 +1323,9 @@ def transform_to_ip(entity, params):
         infos = socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise TransformSourceError(
-            "DNS lookup for %s failed (%s)." % (name, exc.strerror or exc))
+            f"DNS lookup for {name} failed ({exc.strerror or exc}).") from None
     except OSError as exc:
-        raise TransformSourceError("DNS lookup for %s failed (%s)." % (name, exc))
+        raise TransformSourceError(f"DNS lookup for {name} failed ({exc}).") from None
 
     entities, links, seen = [], [], set()
     for family, _stype, _proto, _canon, sockaddr in infos:
@@ -1338,7 +1337,7 @@ def transform_to_ip(entity, params):
             "ipv6" if family == socket.AF_INET6 else "ipv4", address, {"resolvedFrom": name}))
         links.append(_link("resolves_to"))
     if not entities:
-        raise TransformSourceError("%s has no A or AAAA records." % name)
+        raise TransformSourceError(f"{name} has no A or AAAA records.")
     return {"entities": entities, "links": links}
 
 
@@ -1357,7 +1356,7 @@ def _ct_names(raw_names, domain):
 
 def _subdomains_from_crtsh(domain):
     rows = _fetch_json(
-        "https://crt.sh/?q=%s&output=json" % urllib.parse.quote("%." + domain),
+        f"https://crt.sh/?q={urllib.parse.quote('%.' + domain)}&output=json",
         timeout=CRTSH_TIMEOUT)
     if not isinstance(rows, list):
         raise TransformSourceError("crt.sh returned an unexpected document.")
@@ -1371,8 +1370,8 @@ def _subdomains_from_crtsh(domain):
 
 def _subdomains_from_certspotter(domain):
     rows = _fetch_json(
-        "https://api.certspotter.com/v1/issuances?domain=%s&include_subdomains=true"
-        "&expand=dns_names" % urllib.parse.quote(domain))
+        f"https://api.certspotter.com/v1/issuances?domain={urllib.parse.quote(domain)}&include_subdomains=true"
+        "&expand=dns_names")
     if not isinstance(rows, list):
         raise TransformSourceError("api.certspotter.com returned an unexpected document.")
     raw = []
@@ -1397,16 +1396,16 @@ def transform_to_subdomains(entity, params):
             names = _subdomains_from_certspotter(domain)
         except TransformSourceError as certspotter_error:
             raise TransformSourceError(
-                "Both certificate-transparency sources failed -- %s %s"
-                % (crtsh_error, certspotter_error))
-        note = "crt.sh failed (%s) -- these came from api.certspotter.com." % crtsh_error
+                f"Both certificate-transparency sources failed -- "
+                f"{crtsh_error} {certspotter_error}") from None
+        note = f"crt.sh failed ({crtsh_error}) -- these came from api.certspotter.com."
 
     # Shallowest first: 'mail.example.com' is more useful than a four-label
     # build artefact when the result set is about to be clamped.
     ordered = sorted(names, key=lambda n: (n.count("."), n))
     entities = [_entity("domain", name, {}) for name in ordered]
     if not entities:
-        note = "No certificate-transparency record names a subdomain of %s." % domain
+        note = f"No certificate-transparency record names a subdomain of {domain}."
     return {
         "entities": entities,
         "links": [_link("subdomain_of") for _ in entities],
@@ -1418,10 +1417,10 @@ def transform_whois(entity, params):
     """domain -> registrar, contacts and nameservers, from RDAP."""
     domain = _clean_hostname(entity.get("value"))
     data = _fetch_json(
-        "https://rdap.org/domain/%s" % urllib.parse.quote(domain), allow_404=True)
+        f"https://rdap.org/domain/{urllib.parse.quote(domain)}", allow_404=True)
     if not isinstance(data, dict):
         return {"entities": [], "links": [],
-                "note": "No RDAP record exists for %s." % domain}
+                "note": f"No RDAP record exists for {domain}."}
 
     entities, links, source_props = [], [], {}
 
@@ -1439,8 +1438,8 @@ def transform_whois(entity, params):
             address = _vcard_field(contact, "email")
             if address and address.lower() not in seen_emails:
                 seen_emails.add(address.lower())
-                entities.append(_entity("email", address, {"displayName": "%s contact" % role}))
-                links.append(_link("%s_contact" % role))
+                entities.append(_entity("email", address, {"displayName": f"{role} contact"}))
+                links.append(_link(f"{role}_contact"))
 
     for nameserver in (data.get("nameservers") or [])[:8]:
         name = str((nameserver or {}).get("ldhName") or "").strip().lower().rstrip(".")
@@ -1455,8 +1454,8 @@ def transform_whois(entity, params):
 
     note = None
     if not entities:
-        note = ("RDAP holds a record for %s but names no registrar, contact or "
-                "nameserver -- registries commonly redact all three." % domain)
+        note = (f"RDAP holds a record for {domain} but names no registrar, contact or "
+                "nameserver -- registries commonly redact all three.")
     return {"entities": entities, "links": links,
             "sourceProperties": source_props, "note": note}
 
@@ -1464,9 +1463,9 @@ def transform_whois(entity, params):
 def transform_to_asn(entity, params):
     """ipv4 -> the organisation holding the netblock, from RDAP."""
     ip = _public_ip(entity.get("value"))
-    data = _fetch_json("https://rdap.org/ip/%s" % urllib.parse.quote(ip), allow_404=True)
+    data = _fetch_json(f"https://rdap.org/ip/{urllib.parse.quote(ip)}", allow_404=True)
     if not isinstance(data, dict):
-        return {"entities": [], "links": [], "note": "No RDAP record covers %s." % ip}
+        return {"entities": [], "links": [], "note": f"No RDAP record covers {ip}."}
 
     org = None
     for role in ("registrant", "administrative", "technical", "abuse"):
@@ -1479,7 +1478,7 @@ def transform_to_asn(entity, params):
     label = org or str(data.get("name") or "").strip() or str(data.get("handle") or "").strip()
     if not label:
         return {"entities": [], "links": [],
-                "note": "RDAP names no organisation for %s." % ip}
+                "note": f"RDAP names no organisation for {ip}."}
 
     cidrs = []
     for block in data.get("cidr0_cidrs") or []:
@@ -1488,7 +1487,7 @@ def transform_to_asn(entity, params):
         prefix = block.get("v4prefix") or block.get("v6prefix")
         length = block.get("length")
         if prefix and length is not None:
-            cidrs.append("%s/%s" % (prefix, length))
+            cidrs.append(f"{prefix}/{length}")
 
     country = str(data.get("country") or "").strip()
     props = {"country": country}
@@ -1514,15 +1513,15 @@ def transform_to_asn(entity, params):
 def transform_geolocate(entity, params):
     """ipv4 -> approximate location, from ipwho.is."""
     ip = _public_ip(entity.get("value"))
-    data = _fetch_json("https://ipwho.is/%s" % urllib.parse.quote(ip))
+    data = _fetch_json(f"https://ipwho.is/{urllib.parse.quote(ip)}")
     if not isinstance(data, dict) or data.get("success") is False:
         reason = (data or {}).get("message") or "no reason given"
-        raise TransformSourceError("ipwho.is could not locate %s (%s)." % (ip, reason))
+        raise TransformSourceError(f"ipwho.is could not locate {ip} ({reason}).")
 
     lat, lng = data.get("latitude"), data.get("longitude")
     if lat is None or lng is None:
         return {"entities": [], "links": [],
-                "note": "ipwho.is has no coordinates for %s." % ip}
+                "note": f"ipwho.is has no coordinates for {ip}."}
 
     parts = [str(data.get(k) or "").strip() for k in ("city", "region", "country")]
     label = ", ".join(p for p in parts if p) or ip
@@ -1557,9 +1556,9 @@ def _port_entity(ip, number, protocol="tcp", service=None):
     ssh port in an investigation into one node with edges to every host.
     """
     service = service or WELL_KNOWN_PORTS.get(number)
-    label = "%d/%s" % (number, service) if service else str(number)
+    label = f"{number}/{service}" if service else str(number)
     return _entity(
-        "port", "%s:%d" % (ip, number),
+        "port", f"{ip}:{number}",
         {"port": number, "protocol": protocol, "service": service, "host": ip},
         label=label,
     )
@@ -1569,10 +1568,10 @@ def transform_known_ports(entity, params):
     """ipv4 -> ports Shodan has already observed open. Sends nothing to the target."""
     ip = _public_ip(entity.get("value"))
     data = _fetch_json(
-        "https://internetdb.shodan.io/%s" % urllib.parse.quote(ip), allow_404=True)
+        f"https://internetdb.shodan.io/{urllib.parse.quote(ip)}", allow_404=True)
     if not isinstance(data, dict):
         return {"entities": [], "links": [],
-                "note": "Shodan's InternetDB has no record of %s." % ip}
+                "note": f"Shodan's InternetDB has no record of {ip}."}
 
     entities, links = [], []
     for port in (data.get("ports") or []):
@@ -1599,7 +1598,7 @@ def transform_known_ports(entity, params):
 
     note = None
     if not entities:
-        note = "InternetDB knows %s but lists no open port or hostname." % ip
+        note = f"InternetDB knows {ip} but lists no open port or hostname."
     return {"entities": entities, "links": links,
             "sourceProperties": source_props, "note": note}
 
@@ -1611,13 +1610,13 @@ def transform_to_url(entity, params):
     # every 404 and spam path anyone ever crawled under the domain.
     # Ask for more rows than the caller wants: the length filter below discards
     # some, and the endpoint clamps back down to the real limit afterwards.
-    url = ("https://web.archive.org/cdx/search/cdx?url=%s&matchType=domain"
-           "&output=json&fl=original&collapse=urlkey&filter=statuscode:200&limit=%d"
-           % (urllib.parse.quote(domain), _result_limit(params) * 5))
+    url = (f"https://web.archive.org/cdx/search/cdx?url={urllib.parse.quote(domain)}"
+           f"&matchType=domain&output=json&fl=original&collapse=urlkey"
+           f"&filter=statuscode:200&limit={_result_limit(params) * 5}")
     rows = _fetch_json(url, timeout=ARCHIVE_TIMEOUT)
     if not isinstance(rows, list) or not rows:
         return {"entities": [], "links": [],
-                "note": "The Wayback Machine has nothing archived for %s." % domain}
+                "note": f"The Wayback Machine has nothing archived for {domain}."}
 
     entities, links, seen = [], [], set()
     for row in rows[1:]:  # row 0 is the CDX column header
@@ -1635,7 +1634,7 @@ def transform_to_url(entity, params):
         links.append(_link("hosts_url"))
     return {"entities": entities, "links": links,
             "note": None if entities else
-                    "The Wayback Machine has nothing archived for %s." % domain}
+                    f"The Wayback Machine has nothing archived for {domain}."}
 
 
 COMMON_SCAN_PORTS = (
@@ -1673,7 +1672,7 @@ def transform_tcp_scan(entity, params):
         "entities": entities,
         "links": [_link("open_port") for _ in entities],
         "note": None if entities else
-                "No common TCP port accepted a connection on %s." % ip,
+                f"No common TCP port accepted a connection on {ip}.",
     }
 
 
@@ -1858,8 +1857,7 @@ def api_run_transform():
         return json_error("Entity value must not be empty.", 400)
     if entity.get("type") not in meta["input_types"]:
         return json_error(
-            "Entity type '%s' is not valid for transform '%s'."
-            % (entity.get("type"), transform_id),
+            f"Entity type '{entity.get('type')}' is not valid for transform '{transform_id}'.",
             400,
         )
 
@@ -1872,7 +1870,7 @@ def api_run_transform():
         # crash: the client shows the message, so keep it readable.
         return json_error(str(exc), exc.status)
     except Exception as exc:  # noqa: BLE001 - return controlled error to client
-        return json_error("Transform failed: %s" % exc, 500)
+        return json_error(f"Transform failed: {exc}", 500)
 
     entities = (result.get("entities") or [])[:limit]
     links = (result.get("links") or [])[:limit]

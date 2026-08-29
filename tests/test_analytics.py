@@ -484,7 +484,7 @@ def test_edges_are_passed_through_and_validated(monkeypatch):
 
 
 def test_edges_are_capped(monkeypatch):
-    many = [node_mapper._edge(("ipv4", "1.2.3.%d" % i), ("ipv4", "1.2.3.9"), "x")
+    many = [node_mapper._edge(("ipv4", f"1.2.3.{i}"), ("ipv4", "1.2.3.9"), "x")
             for i in range(node_mapper.TRANSFORM_MAX_EDGES + 50)]
     monkeypatch.setitem(node_mapper.TRANSFORMS, "edgetest", {
         "name": "edge test", "description": "", "input_types": ["ipv4"],

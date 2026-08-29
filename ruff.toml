@@ -1,0 +1,11 @@
+# Matches lodan's rule set so the two repos lint alike. py310 rather than py312
+# because the README states 3.10+ as the floor -- UP rules must not suggest
+# syntax that floor cannot run.
+target-version = "py310"
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+# E501 is off: long lines are almost all SQL strings and URLs, where wrapping
+# hurts more than it helps.
+ignore = ["E501"]

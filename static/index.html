@@ -420,194 +420,200 @@
 
     <div id="layout">
         <div id="sidebar">
-        <div class="panel open" id="panel-workspace">
-            <button class="panel-toggle" type="button">
-                <div class="panel-titles">
-                    <div class="eyebrow">Create</div>
-                    <div class="title">Workspace</div>
-                </div>
-                <span class="chevron" aria-hidden="true"></span>
+        <nav id="sidebar-rail" role="tablist" aria-label="Sidebar sections">
+            <button class="rail-item active" type="button" role="tab" data-section="selection"
+                    aria-selected="true" aria-controls="panel-selection" title="Selection &amp; Properties">
+                <svg class="rail-icon" viewBox="0 0 22 22" aria-hidden="true"><path d="M5 3l6 15 2.2-5.8L19 10z"/></svg>
+                <span class="rail-label">Selection</span>
             </button>
-            <div class="panel-content">
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Entity Palette</h4>
-                        <small>Drag an entity type onto the canvas.</small>
-                    </div>
-                    <input id="palette-search" type="text" placeholder="Filter entity types...">
-                    <div id="entity-palette"></div>
+            <button class="rail-item" type="button" role="tab" data-section="palette"
+                    aria-selected="false" aria-controls="panel-workspace" title="Entity Palette">
+                <svg class="rail-icon" viewBox="0 0 22 22" aria-hidden="true"><circle cx="7" cy="7" r="3"/><rect x="13" y="4" width="6" height="6" rx="1.2"/><rect x="3" y="13" width="6" height="6" rx="1.2"/><circle cx="16" cy="16" r="3"/></svg>
+                <span class="rail-label">Entity Palette</span>
+            </button>
+            <button class="rail-item" type="button" role="tab" data-section="filter"
+                    aria-selected="false" aria-controls="panel-filter" title="Search &amp; Filter">
+                <svg class="rail-icon" viewBox="0 0 22 22" aria-hidden="true"><circle cx="10" cy="10" r="5.5"/><path d="M14 14l5 5"/></svg>
+                <span class="rail-label">Search</span>
+            </button>
+            <button class="rail-item" type="button" role="tab" data-section="layers"
+                    aria-selected="false" aria-controls="panel-layers" title="Layers">
+                <svg class="rail-icon" viewBox="0 0 22 22" aria-hidden="true"><path d="M11 3l8 4-8 4-8-4z"/><path d="M3 12l8 4 8-4"/><path d="M3 16.5l8 4 8-4"/></svg>
+                <span class="rail-label">Layers</span>
+            </button>
+        </nav>
+
+        <div id="sidebar-body">
+            <section class="rail-panel active" id="panel-selection" data-section="selection" role="tabpanel" aria-label="Selection &amp; Properties">
+                <div class="rail-panel-head">
+                    <div class="eyebrow">Focus</div>
+                    <div class="title">Selection &amp; Properties</div>
+                </div>
+                <div class="property-card">
+                <div class="property-card-heading">
+                <div>
+                <div class="eyebrow">Selection</div>
+                <div class="title-sm">Node</div>
+                </div>
+                <div class="selection-chip" id="node-selection-chip">No node selected</div>
+                </div>
+                <div id="node-empty-state" class="empty-state">Select a node to edit its properties.</div>
+                <div id="node-editor" class="property-form">
+                <label>Entity type</label>
+                <select id="edit-entity-type"></select>
+
+                <label>Value</label>
+                <input id="edit-value" type="text">
+                <small id="edit-value-error" class="error-text hidden"></small>
+
+                <label>Label</label>
+                <input id="edit-label" type="text">
+
+                <div id="edit-properties"></div>
+
+                <label>Color</label>
+                <div class="row-inline">
+                <input id="edit-color" type="color">
+                <div id="edit-color-swatches" class="swatches"></div>
                 </div>
 
-                <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Search / Filter</h4>
-                        <small>Hide nodes that do not match your query.</small>
-                    </div>
-                    <input id="search-input" type="text" placeholder="Search (try type:domain)...">
-                    <div class="row-inline">
-                        <select id="filter-type">
-                            <option value="">All types</option>
-                        </select>
-                    </div>
-                    <small>Use <code>type:domain</code> to filter by entity type.</small>
+                <div class="row-inline">
+                <div style="flex:1">
+                <label>Shape</label>
+                <select id="edit-shape">
+                <option value="circle">Circle</option>
+                <option value="rect">Rectangle</option>
+                <option value="rounded">Rounded</option>
+                <option value="diamond">Diamond</option>
+                <option value="cylinder">Cylinder</option>
+                <option value="swimlane">Swimlane</option>
+                </select>
                 </div>
-            </div>
-        </div>
+                <div style="flex:1">
+                <label>Size</label>
+                <input id="edit-size" type="number" min="5" max="400">
+                </div>
+                </div>
 
-        <div class="panel open" id="panel-layers">
-            <button class="panel-toggle" type="button">
-                <div class="panel-titles">
+                <div class="row-inline" id="edit-dimensions">
+                <div style="flex:1">
+                <label>Width</label>
+                <input id="edit-width" type="number" min="20" max="800">
+                </div>
+                <div style="flex:1">
+                <label>Height</label>
+                <input id="edit-height" type="number" min="20" max="800">
+                </div>
+                </div>
+
+                <label>Group</label>
+                <input id="edit-group" type="text" placeholder="Group name">
+
+                <label>Description</label>
+                <textarea id="edit-desc"></textarea>
+
+                <label class="checkbox-inline">
+                <input id="edit-pinned" type="checkbox">
+                Pin position (exclude from layouts)
+                </label>
+
+                <small id="edit-provenance" class="muted"></small>
+
+                <button id="apply-node-edit">Apply Node Changes</button>
+                </div>
+                </div>
+
+                <div class="property-card">
+                <div class="property-card-heading">
+                <div>
+                <div class="eyebrow">Selection</div>
+                <div class="title-sm">Edge</div>
+                </div>
+                <div class="selection-chip" id="edge-selection-chip">No edge selected</div>
+                </div>
+                <div id="edge-empty-state" class="empty-state">Select an edge to edit its properties.</div>
+                <div id="edge-editor" class="property-form">
+                <label>Label</label>
+                <input id="edge-label" type="text">
+
+                <label>Color</label>
+                <input id="edge-color" type="color" value="#888888">
+
+                <label>Width</label>
+                <input id="edge-width" type="number" min="1" max="10" value="2">
+
+                <label>Weight (for shortest path)</label>
+                <input id="edge-weight" type="number" min="0" step="0.1" placeholder="defaults to width">
+
+                <label class="checkbox-inline">
+                <input id="edge-directed" type="checkbox">
+                Directed
+                </label>
+
+                <button id="apply-edge-edit">Apply Edge Changes</button>
+                </div>
+                </div>
+
+                <div class="property-card">
+                <div class="property-card-heading">
+                <div>
+                <div class="eyebrow">Selection</div>
+                <div class="title-sm">Box</div>
+                </div>
+                <div class="selection-chip" id="box-selection-chip">No box selected</div>
+                </div>
+                <div id="box-empty-state" class="empty-state">Select a box to edit its label.</div>
+                <div id="box-editor" class="property-form">
+                <label>Label</label>
+                <input id="edit-box-label" type="text">
+                <button id="apply-box-edit">Apply Changes</button>
+                </div>
+                </div>
+            </section>
+
+            <section class="rail-panel" id="panel-workspace" data-section="palette" role="tabpanel" aria-label="Entity Palette">
+                <div class="rail-panel-head">
+                    <div class="eyebrow">Create</div>
+                    <div class="title">Entity Palette</div>
+                    <small>Drag an entity type onto the canvas.</small>
+                </div>
+                <div class="subsection">
+                <input id="palette-search" type="text" placeholder="Filter entity types...">
+                <div id="entity-palette"></div>
+                </div>
+            </section>
+
+            <section class="rail-panel" id="panel-filter" data-section="filter" role="tabpanel" aria-label="Search &amp; Filter">
+                <div class="rail-panel-head">
+                    <div class="eyebrow">Find</div>
+                    <div class="title">Search &amp; Filter</div>
+                    <small>Hide nodes that do not match your query.</small>
+                </div>
+                <div class="subsection">
+                <input id="search-input" type="text" placeholder="Search (try type:domain)...">
+                <div class="row-inline">
+                <select id="filter-type">
+                <option value="">All types</option>
+                </select>
+                </div>
+                <small>Use <code>type:domain</code> to filter by entity type.</small>
+                </div>
+            </section>
+
+            <section class="rail-panel" id="panel-layers" data-section="layers" role="tabpanel" aria-label="Layers">
+                <div class="rail-panel-head">
                     <div class="eyebrow">Organize</div>
                     <div class="title">Layers</div>
+                    <small>Add, rename, hide, or lock layers.</small>
                 </div>
-                <span class="chevron" aria-hidden="true"></span>
-            </button>
-            <div class="panel-content">
                 <div class="subsection">
-                    <div class="subsection-header">
-                        <h4>Layer Manager</h4>
-                        <small>Add, rename, hide, or lock layers.</small>
-                    </div>
-                    <div id="layers-list"></div>
-                    <button id="add-layer" type="button">Add Layer</button>
+                <div id="layers-list"></div>
+                <button id="add-layer" type="button">Add Layer</button>
                 </div>
-            </div>
-        </div>
-
-        <div class="panel open" id="panel-selection">
-            <button class="panel-toggle" type="button">
-                <div class="panel-titles">
-                    <div class="eyebrow">Focus</div>
-                    <div class="title">Selection & Properties</div>
-                </div>
-                <span class="chevron" aria-hidden="true"></span>
-            </button>
-            <div class="panel-content">
-                <div class="property-card">
-                    <div class="property-card-heading">
-                        <div>
-                            <div class="eyebrow">Selection</div>
-                            <div class="title-sm">Node</div>
-                        </div>
-                        <div class="selection-chip" id="node-selection-chip">No node selected</div>
-                    </div>
-                    <div id="node-empty-state" class="empty-state">Select a node to edit its properties.</div>
-                    <div id="node-editor" class="property-form">
-                        <label>Entity type</label>
-                        <select id="edit-entity-type"></select>
-
-                        <label>Value</label>
-                        <input id="edit-value" type="text">
-                        <small id="edit-value-error" class="error-text hidden"></small>
-
-                        <label>Label</label>
-                        <input id="edit-label" type="text">
-
-                        <div id="edit-properties"></div>
-
-                        <label>Color</label>
-                        <div class="row-inline">
-                            <input id="edit-color" type="color">
-                            <div id="edit-color-swatches" class="swatches"></div>
-                        </div>
-
-                        <div class="row-inline">
-                            <div style="flex:1">
-                                <label>Shape</label>
-                                <select id="edit-shape">
-                                    <option value="circle">Circle</option>
-                                    <option value="rect">Rectangle</option>
-                                    <option value="rounded">Rounded</option>
-                                    <option value="diamond">Diamond</option>
-                                    <option value="cylinder">Cylinder</option>
-                                    <option value="swimlane">Swimlane</option>
-                                </select>
-                            </div>
-                            <div style="flex:1">
-                                <label>Size</label>
-                                <input id="edit-size" type="number" min="5" max="400">
-                            </div>
-                        </div>
-
-                        <div class="row-inline" id="edit-dimensions">
-                            <div style="flex:1">
-                                <label>Width</label>
-                                <input id="edit-width" type="number" min="20" max="800">
-                            </div>
-                            <div style="flex:1">
-                                <label>Height</label>
-                                <input id="edit-height" type="number" min="20" max="800">
-                            </div>
-                        </div>
-
-                        <label>Group</label>
-                        <input id="edit-group" type="text" placeholder="Group name">
-
-                        <label>Description</label>
-                        <textarea id="edit-desc"></textarea>
-
-                        <label class="checkbox-inline">
-                            <input id="edit-pinned" type="checkbox">
-                            Pin position (exclude from layouts)
-                        </label>
-
-                        <small id="edit-provenance" class="muted"></small>
-
-                        <button id="apply-node-edit">Apply Node Changes</button>
-                    </div>
-                </div>
-
-                <div class="property-card">
-                    <div class="property-card-heading">
-                        <div>
-                            <div class="eyebrow">Selection</div>
-                            <div class="title-sm">Edge</div>
-                        </div>
-                        <div class="selection-chip" id="edge-selection-chip">No edge selected</div>
-                    </div>
-                    <div id="edge-empty-state" class="empty-state">Select an edge to edit its properties.</div>
-                    <div id="edge-editor" class="property-form">
-                        <label>Label</label>
-                        <input id="edge-label" type="text">
-
-                        <label>Color</label>
-                        <input id="edge-color" type="color" value="#888888">
-
-                        <label>Width</label>
-                        <input id="edge-width" type="number" min="1" max="10" value="2">
-
-                        <label>Weight (for shortest path)</label>
-                        <input id="edge-weight" type="number" min="0" step="0.1" placeholder="defaults to width">
-
-                        <label class="checkbox-inline">
-                            <input id="edge-directed" type="checkbox">
-                            Directed
-                        </label>
-
-                        <button id="apply-edge-edit">Apply Edge Changes</button>
-                    </div>
-                </div>
-
-                <div class="property-card">
-                    <div class="property-card-heading">
-                        <div>
-                            <div class="eyebrow">Selection</div>
-                            <div class="title-sm">Box</div>
-                        </div>
-                        <div class="selection-chip" id="box-selection-chip">No box selected</div>
-                    </div>
-                    <div id="box-empty-state" class="empty-state">Select a box to edit its label.</div>
-                    <div id="box-editor" class="property-form">
-                        <label>Label</label>
-                        <input id="edit-box-label" type="text">
-                        <button id="apply-box-edit">Apply Changes</button>
-                    </div>
-                </div>
-            </div>
-        </div>
+            </section>
 
         </div>
-
+        </div>
         <div id="canvas-wrap">
             <svg id="graphCanvas"></svg>
             <canvas id="graphCanvasGl" class="hidden"></canvas>

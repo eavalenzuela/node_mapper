@@ -1233,13 +1233,42 @@ async function loadGraphFromBackend() {
 
 // ---------- SIDEBAR UI ----------
 
-// collapsible panels
-document.querySelectorAll(".panel .panel-toggle").forEach(toggle => {
-    toggle.addEventListener("click", () => {
-        const panel = toggle.closest(".panel");
-        if (panel) panel.classList.toggle("open");
+// Left-hand menu rail. Replaces the nested collapsible panels: the sidebar now
+// shows exactly one section at a time, chosen from the rail.
+const RAIL_STORAGE_KEY = "nm.sidebarSection";
+// Sections kept their original panel ids, so openPanel()'s existing callers
+// (the canvas context menus) keep working; this maps id -> rail section.
+const RAIL_SECTION_BY_PANEL_ID = {
+    "panel-selection": "selection",
+    "panel-workspace": "palette",
+    "panel-filter": "filter",
+    "panel-layers": "layers",
+};
+
+function activateSidebarSection(name) {
+    const items = Array.from(document.querySelectorAll("#sidebar-rail .rail-item"));
+    if (!items.some(i => i.dataset.section === name)) return false;
+    items.forEach(i => {
+        const on = i.dataset.section === name;
+        i.classList.toggle("active", on);
+        i.setAttribute("aria-selected", on ? "true" : "false");
     });
+    document.querySelectorAll("#sidebar-body .rail-panel").forEach(p => {
+        p.classList.toggle("active", p.dataset.section === name);
+    });
+    try { localStorage.setItem(RAIL_STORAGE_KEY, name); } catch (e) { /* storage disabled */ }
+    return true;
+}
+
+document.querySelectorAll("#sidebar-rail .rail-item").forEach(item => {
+    item.addEventListener("click", () => activateSidebarSection(item.dataset.section));
 });
+
+// Restore whichever section was open last; the markup defaults to Selection.
+try {
+    const savedSection = localStorage.getItem(RAIL_STORAGE_KEY);
+    if (savedSection) activateSidebarSection(savedSection);
+} catch (e) { /* storage disabled */ }
 
 // mode buttons
 document.querySelectorAll("#mode-toolbar button[data-mode]").forEach(btn => {
@@ -3138,8 +3167,12 @@ document.addEventListener("keydown", e => {
 // ---------- PANEL HELPER ----------
 
 function openPanel(panelId) {
+    // Callers pass the legacy panel ids. Reveal the owning rail section first --
+    // the panel is display:none until then, so scrolling to it before the switch
+    // would be a no-op.
+    activateSidebarSection(RAIL_SECTION_BY_PANEL_ID[panelId] || panelId);
     const p = document.getElementById(panelId);
-    if (p) { p.classList.add("open"); p.scrollIntoView({ behavior: "smooth", block: "nearest" }); }
+    if (p) p.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 // ---------- TRANSFORMS ----------

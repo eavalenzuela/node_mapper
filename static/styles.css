@@ -121,14 +121,105 @@ html, body {
 /* Sidebar */
 
 #sidebar {
-    width: 320px;
+    width: 396px;
     background: var(--sidebar-bg);
     border-right: 1px solid var(--sidebar-border);
-    padding: 12px;
     box-sizing: border-box;
     font-size: 14px;
-    overflow-y: auto;
     color: var(--sidebar-text);
+    display: flex;
+    flex-direction: row;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* Left-hand menu rail: one entry per section, replacing the nested collapsible
+   panels this sidebar used to be. The rail never scrolls; #sidebar-body does. */
+
+#sidebar-rail {
+    flex: 0 0 78px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 6px;
+    box-sizing: border-box;
+    border-right: 1px solid var(--sidebar-border);
+    overflow-y: auto;
+}
+
+/* Outranks the generic `#sidebar button` rule, which would otherwise impose
+   full-width pill styling on every rail entry. */
+#sidebar #sidebar-rail .rail-item {
+    width: 100%;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 9px 4px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--small-text);
+    font-size: 10.5px;
+    line-height: 1.15;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+#sidebar #sidebar-rail .rail-item:hover {
+    background: rgba(127, 127, 127, 0.14);
+    color: var(--sidebar-text);
+}
+
+#sidebar #sidebar-rail .rail-item.active {
+    background: var(--button-active-bg);
+    border-color: var(--button-active-border);
+    color: var(--button-active-text);
+}
+
+#sidebar #sidebar-rail .rail-item:focus-visible {
+    outline: 2px solid var(--button-active-bg);
+    outline-offset: 1px;
+}
+
+.rail-icon {
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+.rail-label {
+    text-align: center;
+    word-break: break-word;
+}
+
+#sidebar-body {
+    flex: 1;
+    min-width: 0;
+    padding: 12px;
+    box-sizing: border-box;
+    overflow-y: auto;
+}
+
+.rail-panel { display: none; }
+.rail-panel.active { display: block; }
+
+.rail-panel-head {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 10px;
+}
+
+.rail-panel-head small {
+    color: var(--small-text);
 }
 
 /* Top bar + tabs */
@@ -230,38 +321,9 @@ html, body {
     display: block;
 }
 
-.panel {
-    border: 1px solid var(--section-border);
-    border-radius: 10px;
-    margin-bottom: 12px;
-    overflow: hidden;
-    background: rgba(255, 255, 255, 0.35);
-}
 
-body.dark .panel {
-    background: rgba(15, 23, 42, 0.6);
-}
 
-.panel-toggle {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    background: transparent;
-    border: none;
-    color: var(--sidebar-text);
-    padding: 12px;
-    cursor: pointer;
-    box-sizing: border-box;
-}
 
-.panel-titles {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 2px;
-}
 
 .eyebrow {
     text-transform: uppercase;
@@ -280,26 +342,9 @@ body.dark .panel {
     font-weight: 700;
 }
 
-.chevron {
-    border: solid var(--small-text);
-    border-width: 0 2px 2px 0;
-    padding: 4px;
-    transform: rotate(45deg);
-    transition: transform 0.2s ease;
-}
 
-.panel.open .chevron {
-    transform: rotate(225deg);
-}
 
-.panel-content {
-    padding: 0 12px 12px 12px;
-    display: none;
-}
 
-.panel.open .panel-content {
-    display: block;
-}
 
 .subsection {
     margin: 12px 0;
@@ -950,12 +995,6 @@ body.dark .entity-item { background: rgba(15, 23, 42, 0.65); }
 }
 #edit-color { width: 42px; flex: 0 0 auto; height: 26px; padding: 0; }
 
-/* Put the Selection & Properties panel first — it is the constant companion to
-   selection — without reordering the HTML. */
-#sidebar { display: flex; flex-direction: column; }
-#panel-selection { order: -1; }
-#panel-workspace { order: 1; }
-#panel-layers { order: 2; }
 
 /* Alternate workspace views */
 #graphCanvasGl {

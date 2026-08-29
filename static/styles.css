@@ -851,18 +851,58 @@ body.dark .legend-chip { background: rgba(17,24,39,0.6); }
 }
 
 /* Entity palette (categorized) */
-.entity-category-title {
+/* Category headers toggle their grid. The selector outranks the generic
+   `#sidebar button` rule, which would otherwise impose full-width pill styling
+   on every header. */
+#sidebar #entity-palette .entity-category-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    width: 100%;
+    margin: 8px 0 4px;
+    padding: 3px 2px;
+    border: 0;
+    border-radius: 4px;
+    background: none;
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
+    text-align: left;
     color: var(--small-text);
-    margin: 8px 0 4px;
+    cursor: pointer;
 }
+
+#sidebar #entity-palette .entity-category-title:hover { color: var(--sidebar-text); }
+
+#sidebar #entity-palette .entity-category-title:focus-visible {
+    outline: 2px solid var(--button-active-bg);
+    outline-offset: 1px;
+}
+
+/* CSS triangle rather than a glyph: it inherits currentColor and stays crisp at
+   this size, where a unicode caret renders inconsistently across platforms. */
+.category-chevron {
+    width: 0;
+    height: 0;
+    flex: 0 0 auto;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 5px solid currentColor;
+    transition: transform 0.15s ease;
+}
+
+.entity-category-title[aria-expanded="false"] .category-chevron { transform: rotate(-90deg); }
 .entity-palette {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 6px;
 }
+
+/* Required, not redundant: the `display: grid` above outranks the UA
+   stylesheet's `[hidden] { display: none }`, so a collapsed grid would stay
+   laid out without this. */
+.entity-palette[hidden] { display: none; }
 .entity-item {
     display: flex;
     align-items: center;

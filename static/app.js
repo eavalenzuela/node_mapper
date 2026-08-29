@@ -4076,21 +4076,65 @@ if (minimap) {
 
 // ---------- ENTITY PALETTE ----------
 
+// Which palette categories are collapsed. Persisted, so a palette trimmed down
+// to the handful of categories you actually work with survives a reload.
+const PALETTE_COLLAPSE_KEY = "nm.paletteCollapsed";
+
+function loadCollapsedCategories() {
+    try {
+        const raw = localStorage.getItem(PALETTE_COLLAPSE_KEY);
+        return new Set(raw ? JSON.parse(raw) : []);
+    } catch (e) { return new Set(); /* storage disabled or corrupt */ }
+}
+
+function saveCollapsedCategories(set) {
+    try { localStorage.setItem(PALETTE_COLLAPSE_KEY, JSON.stringify([...set])); }
+    catch (e) { /* storage disabled */ }
+}
+
 function buildEntityPalette() {
     const wrap = document.getElementById("entity-palette");
     if (!wrap || typeof listEntityCategories !== "function") return;
     const q = (document.getElementById("palette-search")?.value || "").toLowerCase();
+    const searching = !!q;
+    const collapsed = loadCollapsedCategories();
     const cats = listEntityCategories();
     wrap.innerHTML = "";
     Object.keys(cats).forEach(cat => {
         const types = cats[cat].filter(t => !q || t.name.toLowerCase().includes(q) || t.id.toLowerCase().includes(q));
         if (!types.length) return;
-        const title = document.createElement("div");
+        // A search overrides the collapse state: a match buried in a collapsed
+        // category would otherwise be invisible, with nothing hinting it exists.
+        const open = searching || !collapsed.has(cat);
+        const gridId = "entity-cat-" + cat.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+        const title = document.createElement("button");
+        title.type = "button";
         title.className = "entity-category-title";
-        title.textContent = cat;
+        title.setAttribute("aria-expanded", open ? "true" : "false");
+        title.setAttribute("aria-controls", gridId);
+        const titleText = document.createElement("span");
+        titleText.textContent = cat;
+        const chevron = document.createElement("span");
+        chevron.className = "category-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        title.appendChild(titleText);
+        title.appendChild(chevron);
         wrap.appendChild(title);
         const grid = document.createElement("div");
+        grid.id = gridId;
         grid.className = "entity-palette";
+        grid.hidden = !open;
+        title.addEventListener("click", () => {
+            const nowOpen = grid.hidden;
+            grid.hidden = !nowOpen;
+            title.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+            // While searching every category is force-opened, so a toggle there
+            // is a view-only tweak -- it must not rewrite the saved state.
+            if (searching) return;
+            const set = loadCollapsedCategories();
+            if (nowOpen) set.delete(cat); else set.add(cat);
+            saveCollapsedCategories(set);
+        });
         types.forEach(t => {
             const item = document.createElement("div");
             item.className = "entity-item";

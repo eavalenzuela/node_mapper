@@ -4078,13 +4078,26 @@ if (minimap) {
 
 // Which palette categories are collapsed. Persisted, so a palette trimmed down
 // to the handful of categories you actually work with survives a reload.
-const PALETTE_COLLAPSE_KEY = "nm.paletteCollapsed";
+// Key is versioned: v1 defaulted to all-expanded, and anyone who had toggled a
+// category then carries a saved set that would suppress the new default below.
+const PALETTE_COLLAPSE_KEY = "nm.paletteCollapsed.v2";
+// Everything but this starts collapsed -- 17 categories of several hundred
+// tiles is a scroll, not a palette.
+const PALETTE_DEFAULT_OPEN = "General";
 
+// Returns null when there is nothing saved, which is distinct from a saved
+// empty set (someone who expanded every category): the former takes the
+// default, the latter must not.
 function loadCollapsedCategories() {
     try {
         const raw = localStorage.getItem(PALETTE_COLLAPSE_KEY);
-        return new Set(raw ? JSON.parse(raw) : []);
-    } catch (e) { return new Set(); /* storage disabled or corrupt */ }
+        if (raw === null) return null;
+        return new Set(JSON.parse(raw));
+    } catch (e) { return null; /* storage disabled, or corrupt JSON */ }
+}
+
+function defaultCollapsedCategories(cats) {
+    return new Set(Object.keys(cats).filter(c => c !== PALETTE_DEFAULT_OPEN));
 }
 
 function saveCollapsedCategories(set) {
@@ -4097,8 +4110,8 @@ function buildEntityPalette() {
     if (!wrap || typeof listEntityCategories !== "function") return;
     const q = (document.getElementById("palette-search")?.value || "").toLowerCase();
     const searching = !!q;
-    const collapsed = loadCollapsedCategories();
     const cats = listEntityCategories();
+    const collapsed = loadCollapsedCategories() || defaultCollapsedCategories(cats);
     wrap.innerHTML = "";
     Object.keys(cats).forEach(cat => {
         const types = cats[cat].filter(t => !q || t.name.toLowerCase().includes(q) || t.id.toLowerCase().includes(q));
@@ -4131,7 +4144,9 @@ function buildEntityPalette() {
             // While searching every category is force-opened, so a toggle there
             // is a view-only tweak -- it must not rewrite the saved state.
             if (searching) return;
-            const set = loadCollapsedCategories();
+            // First toggle materialises the default, so the untouched
+            // categories stay collapsed rather than reverting to expanded.
+            const set = loadCollapsedCategories() || defaultCollapsedCategories(cats);
             if (nowOpen) set.delete(cat); else set.add(cat);
             saveCollapsedCategories(set);
         });

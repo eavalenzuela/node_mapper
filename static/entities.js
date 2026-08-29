@@ -6193,8 +6193,10 @@
     }
 ];
 
-    // Palette grouping order.
-    const CATEGORY_ORDER = ["General", "Identity", "Network", "Infrastructure", "Geo", "UML · Structural", "UML · Behavioral", "Data Flow", "Cloud · Compute", "Cloud · Storage & Data", "Cloud · Network", "Kubernetes", "Cloud · Security & IAM", "DevOps & Delivery", "Observability & Integration", "Threat", "Shapes"];
+    // Palette grouping order. Shapes sits second because it holds the untyped
+    // primitives you reach for while sketching; the typed domain categories
+    // below it are for filling that sketch in.
+    const CATEGORY_ORDER = ["General", "Shapes", "Identity", "Network", "Infrastructure", "Geo", "UML · Structural", "UML · Behavioral", "Data Flow", "Cloud · Compute", "Cloud · Storage & Data", "Cloud · Network", "Kubernetes", "Cloud · Security & IAM", "DevOps & Delivery", "Observability & Integration", "Threat"];
 
     const _orderIndex = {};
     CATEGORY_ORDER.forEach((c, i) => { _orderIndex[c] = i; });

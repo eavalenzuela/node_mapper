@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # Both runtimes in one job: the suites are seconds long, so a matrix
+      # would cost more in setup than it saves.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: ruff check .
+      - run: python -m pytest -q tests
+
+      # No npm install: the JS suite runs on node's built-in test runner and
+      # the app has no JS dependencies. Keep it that way.
+      - run: npm test
+      # app.js is browser-only, so no test imports it -- a syntax check is the
+      # only automated coverage it gets.
+      - name: syntax-check browser JS
+        run: for f in static/*.js; do node --check "$f"; done

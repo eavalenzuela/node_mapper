@@ -132,7 +132,12 @@ Beyond plain diagramming, Node Mapper now works as a lightweight link-analysis t
 
 ## Testing
 - JavaScript (layout engines + entity registry): `npm test` — uses Node's built-in test runner, no dependencies.
-- Python (server analytics, centrality, transforms, projects): `pip install pytest && python -m pytest -q tests`.
+- Python (server analytics, centrality, transforms, projects): `pip install -r requirements-dev.txt && python -m pytest -q tests`.
+- Lint: `ruff check .` (config in `ruff.toml`).
+
+All three run on every push and pull request via GitHub Actions
+(`.github/workflows/ci.yml`). The transform tests stub the network at
+`_fetch_json` and `socket`, so the suite never makes a real request.
 
 ## Analytics
 - Use the **Analytics** panel in the sidebar to compute node/edge counts, component counts, average/max degree, isolated node totals, graph **density**, **self-loop** counts, and (for small graphs) the **diameter** and **average shortest-path length** of the largest component. The same metrics are mirrored by the server `/analytics` endpoint for large graphs.

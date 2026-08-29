@@ -3230,9 +3230,10 @@ function entityKey(type, value) {
 function mergeTransformResults(sourceNode, transformId, data) {
     const ents = (data && data.entities) || [];
     const links = (data && data.links) || [];
+    const extraEdges = (data && data.edges) || [];
     const srcProps = (data && data.sourceProperties) || {};
     const srcKeys = Object.keys(srcProps);
-    if (!ents.length && !srcKeys.length) { return false; }
+    if (!ents.length && !srcKeys.length && !extraEdges.length) { return false; }
     // Synthetic transforms are marked in provenance, not just in the UI: once a
     // node is in the graph the palette warning is long gone, and an export has
     // to carry which nodes were fabricated.
@@ -3259,25 +3260,49 @@ function mergeTransformResults(sourceNode, transformId, data) {
             const angle = (i / n) * Math.PI * 2;
             const r = 160;
             targetId = createNodeAt(sourceNode.x + Math.cos(angle) * r, sourceNode.y + Math.sin(angle) * r, {
-                entityType: ent.type, value: ent.value, label: ent.value, properties: ent.properties || {}
+                // value is the identity we de-duplicate on; label is what the
+                // node reads as, and the two differ where a unique value is not
+                // a readable one (a port keyed '10.0.0.1:22' reads '22/ssh').
+                entityType: ent.type, value: ent.value, label: ent.label || ent.value,
+                properties: ent.properties || {}
             });
             nodes[targetId].provenance = { source: provSource, createdAt: Date.now() };
             existingByKey[key] = targetId;
         }
         const link = links[i] || links[0] || {};
-        const exists = edges.some(e => (e.source === sourceNode.id && e.target === targetId));
-        if (!exists && targetId !== sourceNode.id) {
-            const eid = createEdge(sourceNode.id, targetId);
-            const edge = edges.find(e => e.id === eid);
-            if (edge) {
-                edge.label = link.label || transformId;
-                edge.directed = link.directed !== false;
-                edge.provenance = { source: provSource, createdAt: Date.now() };
-            }
-        }
+        connectTransformNodes(sourceNode.id, targetId, link.label || transformId, link.directed !== false, provSource);
+    });
+    // Edges whose endpoints are both results (or both already on the canvas):
+    // 'this certificate covers that domain', 'these two addresses are one
+    // machine'. links[] can only ever reach back to the source node.
+    extraEdges.forEach(spec => {
+        const from = spec && spec.from, to = spec && spec.to;
+        if (!from || !to) return;
+        const a = existingByKey[entityKey(from.type, from.value)];
+        const b = existingByKey[entityKey(to.type, to.value)];
+        // An endpoint naming something not in the response and not on the
+        // canvas is skipped -- an edge must not conjure the node it points at.
+        if (!a || !b) return;
+        connectTransformNodes(a, b, spec.label || transformId, spec.directed !== false, provSource);
     });
     render();
     return true;
+}
+
+// Create one transform-provenanced edge, unless the pair is already joined.
+function connectTransformNodes(sourceId, targetId, label, directed, provSource) {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const joined = edges.some(e =>
+        (e.source === sourceId && e.target === targetId) ||
+        (!directed && e.source === targetId && e.target === sourceId));
+    if (joined) return;
+    const eid = createEdge(sourceId, targetId);
+    const edge = edges.find(e => e.id === eid);
+    if (edge) {
+        edge.label = label;
+        edge.directed = directed;
+        edge.provenance = { source: provSource, createdAt: Date.now() };
+    }
 }
 
 // ---------- CONTEXT MENU ----------

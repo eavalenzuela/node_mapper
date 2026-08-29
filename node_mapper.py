@@ -1050,6 +1050,7 @@ LOOKUP_CACHE_MAX = 512
 
 TRANSFORM_DEFAULT_LIMIT = 12
 TRANSFORM_MAX_LIMIT = 50
+TRANSFORM_MAX_EDGES = 200
 
 
 class TransformInputError(Exception):
@@ -1200,6 +1201,17 @@ def _scan_target(value):
     return str(addr)
 
 
+def _valid_edge(edge):
+    """An edge is only usable if both endpoints name a (type, value) pair."""
+    if not isinstance(edge, dict):
+        return False
+    for side in ("from", "to"):
+        end = edge.get(side)
+        if not isinstance(end, dict) or not end.get("type") or not end.get("value"):
+            return False
+    return True
+
+
 def _result_limit(params):
     """The endpoint clamps results too; transforms use this to avoid asking a
     source for far more than the client will keep."""
@@ -1254,16 +1266,44 @@ def _rdap_event(node, action):
 
 # --- result helpers ---------------------------------------------------------
 
-def _entity(etype, value, properties=None):
+def _entity(etype, value, properties=None, label=None):
+    """One result entity.
+
+    `value` is the identity -- the client de-duplicates on (type, value), so it
+    has to be unique across the whole graph. `label` is what the node reads as
+    on canvas, for the cases where a unique value is not a readable one (a port
+    keyed '10.0.0.1:22' should still say '22/ssh').
+    """
     # Empty values are dropped rather than emitted: a source that has no country
     # for a netblock should leave the field unset, not stamp "" over whatever the
     # analyst typed there. 0 and False are kept -- only None and "" go.
     props = {k: v for k, v in (properties or {}).items() if v is not None and v != ""}
-    return {"type": etype, "value": value, "properties": props}
+    entity = {"type": etype, "value": value, "properties": props}
+    if label and label != value:
+        entity["label"] = label
+    return entity
 
 
 def _link(label, directed=True):
+    """An edge from the entity the transform ran on to entities[i]."""
     return {"label": label, "directed": directed}
+
+
+def _edge(from_entity, to_entity, label, directed=True):
+    """An edge between two named endpoints, neither of which need be the source.
+
+    `links` can only ever attach a result to the entity the transform ran on,
+    which cannot express 'this certificate covers that domain' or 'these two
+    addresses are one machine'. Endpoints are matched by (type, value) against
+    the entities in the same response and everything already in the graph;
+    an endpoint that matches nothing is skipped rather than conjured.
+    """
+    return {
+        "from": {"type": from_entity[0], "value": from_entity[1]},
+        "to": {"type": to_entity[0], "value": to_entity[1]},
+        "label": label,
+        "directed": directed,
+    }
 
 
 def _seed_int(*parts):
@@ -1509,6 +1549,22 @@ WELL_KNOWN_PORTS = {
 }
 
 
+def _port_entity(ip, number, protocol="tcp", service=None):
+    """A port node scoped to its host.
+
+    The value carries the address because the client de-duplicates on
+    (type, value) across the entire graph: a bare "22" would collapse every
+    ssh port in an investigation into one node with edges to every host.
+    """
+    service = service or WELL_KNOWN_PORTS.get(number)
+    label = "%d/%s" % (number, service) if service else str(number)
+    return _entity(
+        "port", "%s:%d" % (ip, number),
+        {"port": number, "protocol": protocol, "service": service, "host": ip},
+        label=label,
+    )
+
+
 def transform_known_ports(entity, params):
     """ipv4 -> ports Shodan has already observed open. Sends nothing to the target."""
     ip = _public_ip(entity.get("value"))
@@ -1524,11 +1580,7 @@ def transform_known_ports(entity, params):
             number = int(port)
         except (TypeError, ValueError):
             continue
-        props = {"protocol": "tcp"}
-        service = WELL_KNOWN_PORTS.get(number)
-        if service:
-            props["service"] = service
-        entities.append(_entity("port", str(number), props))
+        entities.append(_port_entity(ip, number))
         links.append(_link("open_port"))
 
     for hostname in (data.get("hostnames") or [])[:10]:
@@ -1616,13 +1668,7 @@ def transform_tcp_scan(entity, params):
     with futures.ThreadPoolExecutor(max_workers=16) as pool:
         open_ports = sorted(p for p in pool.map(probe, COMMON_SCAN_PORTS) if p)
 
-    entities = []
-    for port in open_ports:
-        props = {"protocol": "tcp"}
-        service = WELL_KNOWN_PORTS.get(port)
-        if service:
-            props["service"] = service
-        entities.append(_entity("port", str(port), props))
+    entities = [_port_entity(ip, port) for port in open_ports]
     return {
         "entities": entities,
         "links": [_link("open_port") for _ in entities],
@@ -1830,9 +1876,14 @@ def api_run_transform():
 
     entities = (result.get("entities") or [])[:limit]
     links = (result.get("links") or [])[:limit]
+    # Edges are capped separately: they are cheap, they carry no new nodes, and
+    # a dense result (every port of every host) needs more of them than there
+    # are entities.
+    edges = [e for e in (result.get("edges") or []) if _valid_edge(e)][:TRANSFORM_MAX_EDGES]
     return jsonify({
         "entities": entities,
         "links": links,
+        "edges": edges,
         # Facts about the entity the transform ran ON, merged onto that node.
         "sourceProperties": result.get("sourceProperties") or {},
         "note": result.get("note") or "",

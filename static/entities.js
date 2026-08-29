@@ -181,6 +181,11 @@
         "icon": "🔌",
         "properties": [
             {
+                "key": "port",
+                "label": "Port",
+                "type": "number"
+            },
+            {
                 "key": "service",
                 "label": "Service",
                 "type": "string"
@@ -188,6 +193,11 @@
             {
                 "key": "protocol",
                 "label": "Protocol",
+                "type": "string"
+            },
+            {
+                "key": "host",
+                "label": "Host",
                 "type": "string"
             }
         ]
@@ -6163,6 +6173,102 @@
             {
                 "key": "aliases",
                 "label": "Aliases",
+                "type": "string"
+            }
+        ]
+    },
+    {
+        "id": "cve",
+        "name": "CVE",
+        "category": "Threat",
+        "color": "#e15759",
+        "shape": "diamond",
+        "icon": "🚨",
+        "valuePattern": "^CVE-\\d{4}-\\d{4,}$",
+        "properties": [
+            {
+                "key": "cvss",
+                "label": "CVSS",
+                "type": "number"
+            },
+            {
+                "key": "epss",
+                "label": "EPSS",
+                "type": "number"
+            },
+            {
+                "key": "kev",
+                "label": "In CISA KEV",
+                "type": "string"
+            },
+            {
+                "key": "priority",
+                "label": "Priority",
+                "type": "string"
+            },
+            {
+                "key": "summary",
+                "label": "Summary",
+                "type": "string"
+            }
+        ]
+    },
+    {
+        "id": "finding",
+        "name": "Finding",
+        "category": "Threat",
+        "color": "#f28e2b",
+        "shape": "diamond",
+        "icon": "⚠️",
+        "properties": [
+            {
+                "key": "severity",
+                "label": "Severity",
+                "type": "string"
+            },
+            {
+                "key": "kind",
+                "label": "Kind",
+                "type": "string"
+            },
+            {
+                "key": "evidence",
+                "label": "Evidence",
+                "type": "string"
+            }
+        ]
+    },
+    {
+        "id": "certificate",
+        "name": "TLS Certificate",
+        "category": "Network",
+        "color": "#76b7b2",
+        "shape": "rect",
+        "icon": "📜",
+        "properties": [
+            {
+                "key": "subject",
+                "label": "Subject",
+                "type": "string"
+            },
+            {
+                "key": "issuer",
+                "label": "Issuer",
+                "type": "string"
+            },
+            {
+                "key": "notAfter",
+                "label": "Expires",
+                "type": "string"
+            },
+            {
+                "key": "keyBits",
+                "label": "Key bits",
+                "type": "number"
+            },
+            {
+                "key": "sigHash",
+                "label": "Signature hash",
                 "type": "string"
             }
         ]

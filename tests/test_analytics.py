@@ -179,6 +179,10 @@ def run(transform_id, etype, value, **params):
     })
 
 
+def _e(etype, value):
+    return {"type": etype, "value": value, "properties": {}}
+
+
 def stub_fetch(monkeypatch, payload, expect_url=None):
     """Point _fetch_json at a canned document; payload may be a dict/list or a
     callable taking the url."""
@@ -320,10 +324,32 @@ def test_known_ports_reads_internetdb(monkeypatch):
     })
     body = run("to_ports", "ipv4", "8.8.8.8").get_json()
     ports = [e for e in body["entities"] if e["type"] == "port"]
-    assert [p["value"] for p in ports] == ["22", "443"]
+    # The value carries the host: the client de-duplicates on (type, value), so
+    # a bare "22" would collapse every ssh port in the graph into one node.
+    assert [p["value"] for p in ports] == ["8.8.8.8:22", "8.8.8.8:443"]
+    assert ports[0]["label"] == "22/ssh"
+    assert ports[0]["properties"]["port"] == 22
+    assert ports[0]["properties"]["host"] == "8.8.8.8"
     assert ports[0]["properties"]["service"] == "ssh"
     assert any(e["type"] == "domain" and e["value"] == "dns.google" for e in body["entities"])
     assert body["sourceProperties"]["vulns"] == "CVE-2021-1234"
+
+
+def test_port_nodes_from_two_hosts_do_not_collide(monkeypatch):
+    stub_fetch(monkeypatch, {"ports": [22]})
+    first = run("to_ports", "ipv4", "8.8.8.8").get_json()["entities"][0]
+    second = run("to_ports", "ipv4", "1.1.1.1").get_json()["entities"][0]
+    assert first["value"] != second["value"]
+    assert first["label"] == second["label"] == "22/ssh"
+
+
+def test_a_port_with_no_well_known_service_labels_as_the_number(monkeypatch):
+    stub_fetch(monkeypatch, {"ports": [49152]})
+    entity = run("to_ports", "ipv4", "8.8.8.8").get_json()["entities"][0]
+    assert entity["value"] == "8.8.8.8:49152"
+    # No label key at all when it would just repeat the value's readable part.
+    assert entity.get("label", "49152") == "49152"
+    assert "service" not in entity["properties"]
 
 
 def test_unknown_host_is_an_empty_result_not_an_error(monkeypatch):
@@ -408,7 +434,8 @@ def test_active_scan_probes_when_enabled(monkeypatch):
     # A private target is allowed here: mapping your own network is the point of
     # opting in.
     body = run("tcp_scan", "ipv4", "192.168.1.10").get_json()
-    assert sorted(int(e["value"]) for e in body["entities"]) == [22, 443]
+    assert sorted(e["value"] for e in body["entities"]) == ["192.168.1.10:22", "192.168.1.10:443"]
+    assert sorted(e["properties"]["port"] for e in body["entities"]) == [22, 443]
 
 
 def test_listing_flags_synthetic_and_unavailable(monkeypatch):
@@ -427,6 +454,49 @@ def test_synthetic_transforms_say_so_in_the_response():
     body = run("person_to_social", "person", "Jane Doe").get_json()
     assert body["synthetic"] is True
     assert all(e["type"] == "url" for e in body["entities"])
+
+
+def test_edges_are_passed_through_and_validated(monkeypatch):
+    # A transform may return edges between two results; endpoints must name a
+    # (type, value) pair, and malformed ones are dropped rather than shipped.
+    def fake(entity, params):
+        return {
+            "entities": [_e("ipv4", "1.2.3.4"), _e("ipv4", "1.2.3.9")],
+            "links": [],
+            "edges": [
+                node_mapper._edge(("ipv4", "1.2.3.4"), ("ipv4", "1.2.3.9"),
+                                  "same_machine", directed=False),
+                {"from": {"type": "ipv4"}, "to": {"type": "ipv4", "value": "x"}},  # no value
+                {"label": "orphan"},                                               # no endpoints
+                "not-an-edge",
+            ],
+        }
+
+    monkeypatch.setitem(node_mapper.TRANSFORMS, "edgetest", {
+        "name": "edge test", "description": "", "input_types": ["ipv4"], "run": fake,
+    })
+    body = run("edgetest", "ipv4", "8.8.8.8").get_json()
+    assert len(body["edges"]) == 1
+    edge = body["edges"][0]
+    assert edge["from"]["value"] == "1.2.3.4"
+    assert edge["to"]["value"] == "1.2.3.9"
+    assert edge["directed"] is False
+
+
+def test_edges_are_capped(monkeypatch):
+    many = [node_mapper._edge(("ipv4", "1.2.3.%d" % i), ("ipv4", "1.2.3.9"), "x")
+            for i in range(node_mapper.TRANSFORM_MAX_EDGES + 50)]
+    monkeypatch.setitem(node_mapper.TRANSFORMS, "edgetest", {
+        "name": "edge test", "description": "", "input_types": ["ipv4"],
+        "run": lambda e, p: {"entities": [], "links": [], "edges": many},
+    })
+    body = run("edgetest", "ipv4", "8.8.8.8").get_json()
+    assert len(body["edges"]) == node_mapper.TRANSFORM_MAX_EDGES
+
+
+def test_entity_label_is_omitted_when_it_equals_the_value():
+    assert "label" not in node_mapper._entity("domain", "example.com", label="example.com")
+    assert node_mapper._entity("port", "1.2.3.4:22", label="22/ssh")["label"] == "22/ssh"
 
 
 def test_transform_rejects_wrong_input_type():

@@ -188,8 +188,9 @@ def stub_fetch(monkeypatch, payload, expect_url=None):
     callable taking the url."""
     seen = {}
 
-    def fake(url, timeout=None, allow_404=False):
+    def fake(url, timeout=None, allow_404=False, **kwargs):
         seen["url"] = url
+        seen.update(kwargs)
         result = payload(url) if callable(payload) else payload
         if isinstance(result, Exception):
             raise result
@@ -497,6 +498,143 @@ def test_edges_are_capped(monkeypatch):
 def test_entity_label_is_omitted_when_it_equals_the_value():
     assert "label" not in node_mapper._entity("domain", "example.com", label="example.com")
     assert node_mapper._entity("port", "1.2.3.4:22", label="22/ssh")["label"] == "22/ssh"
+
+
+# --- lodan workspace transform ----------------------------------------------
+
+LODAN_HOST = {
+    "workspace": "home", "scan_id": 3, "ip": "192.168.68.54",
+    "authorized": True, "found": True,
+    "host": {"rdns": "nas.lan", "asn": None, "asn_org": None, "country": None,
+             "os_guess": "Ubuntu", "os_family": None, "device_type": "server",
+             "nat_suspected": False, "min_backend_count": 1, "backend_evidence": []},
+    "services": [{"port": 22, "proto": "tcp", "service": "ssh",
+                  "banner": "SSH-2.0-OpenSSH_10.2p1"}],
+    "vulns": [{"port": 22, "cve": "CVE-2008-3844", "confidence": 0.45,
+               "epss": 0.02662, "kev": False, "priority": "high"}],
+    "certs": [{"port": 443, "position": 0, "sha256": "ab" * 32,
+               "subject": "CN=nas.lan", "issuer": "CN=nas.lan", "key_bits": 2048}],
+    "findings": [{"port": 22, "category": "weak-crypto", "severity": "low",
+                  "title": "SSH offers deprecated mac", "detail": {"mac": "umac-64"}}],
+    "topology": {"nat_suspected": False, "min_backend_count": 1,
+                 "backend_evidence": [], "clock_siblings": [{"ip": "192.168.68.52",
+                                                             "clock_key": "boot-1"}]},
+}
+
+
+def with_lodan(monkeypatch, payload):
+    monkeypatch.setattr(node_mapper, "LODAN_URL", "http://lodan.test:8765")
+    return stub_fetch(monkeypatch, payload)
+
+
+def test_lodan_lookup_is_unavailable_until_configured(monkeypatch):
+    monkeypatch.setattr(node_mapper, "LODAN_URL", "")
+    listing = {t["id"]: t for t in client().get("/api/transforms").get_json()["transforms"]}
+    assert listing["lodan_lookup"]["available"] is False
+    assert "LODAN_URL" in listing["lodan_lookup"]["reason"]
+    r = run("lodan_lookup", "ipv4", "192.168.68.54")
+    assert r.status_code == 400
+    assert "LODAN_URL" in r.get_json()["error"]
+
+
+def test_lodan_lookup_maps_a_host(monkeypatch):
+    with_lodan(monkeypatch, LODAN_HOST)
+    body = run("lodan_lookup", "ipv4", "192.168.68.54").get_json()
+    by_type = {}
+    for e in body["entities"]:
+        by_type.setdefault(e["type"], []).append(e)
+    assert by_type["port"][0]["value"] == "192.168.68.54:22"
+    assert by_type["port"][0]["properties"]["banner"].startswith("SSH-2.0-OpenSSH")
+    assert by_type["domain"][0]["value"] == "nas.lan"
+    assert by_type["cve"][0]["value"] == "CVE-2008-3844"
+    # The confidence has to travel with the match: 0.45 is "matched the product
+    # and nothing more", which is not the same claim as the CVE id alone.
+    assert by_type["cve"][0]["properties"]["confidence"] == 0.45
+    assert by_type["cve"][0]["properties"]["epss"] == 0.02662
+    assert by_type["certificate"][0]["label"] == "CN=nas.lan"
+    assert by_type["finding"][0]["value"] == "192.168.68.54:22:weak-crypto"
+    assert by_type["finding"][0]["label"] == "SSH offers deprecated mac"
+    # Host inference lands on the schema's own keys, or it is invisible.
+    assert body["sourceProperties"] == {"os": "Ubuntu", "device": "server"}
+
+
+def test_lodan_results_attach_to_their_port_not_the_host(monkeypatch):
+    with_lodan(monkeypatch, LODAN_HOST)
+    body = run("lodan_lookup", "ipv4", "192.168.68.54").get_json()
+    pairs = {(e["from"]["value"], e["label"], e["to"]["value"]) for e in body["edges"]}
+    assert ("192.168.68.54:22", "vulnerable_to", "CVE-2008-3844") in pairs
+    assert ("192.168.68.54:443", "presents_cert", "ab" * 32) in pairs
+    assert ("192.168.68.54:22", "has_finding", "192.168.68.54:22:weak-crypto") in pairs
+    # A shared TCP-timestamp clock is an edge between two addresses.
+    assert ("192.168.68.54", "same_machine", "192.168.68.52") in pairs
+    # Those results carry a null link so the client does not also spoke them off
+    # the host.
+    kinds = [e["type"] for e in body["entities"]]
+    nulls = [link for link in body["links"] if link is None]
+    assert len(nulls) == kinds.count("cve") + kinds.count("certificate") \
+        + kinds.count("finding") + kinds.count("ipv4")
+
+
+def test_lodan_accepts_private_addresses(monkeypatch):
+    # The public-address guard exists to keep internal addressing out of
+    # third-party logs. lodan is the operator's own record of their own ranges,
+    # so it is the one source where a private address is the expected input.
+    with_lodan(monkeypatch, LODAN_HOST)
+    for value in ("192.168.68.54", "10.1.2.3", "172.16.0.1"):
+        assert run("lodan_lookup", "ipv4", value).status_code == 200, value
+
+
+def test_lodan_says_when_a_target_is_out_of_scope(monkeypatch):
+    with_lodan(monkeypatch, {"scan_id": 3, "ip": "8.8.8.8",
+                             "authorized": False, "found": False, "host": None})
+    body = run("lodan_lookup", "ipv4", "8.8.8.8").get_json()
+    assert body["entities"] == []
+    assert "authorized_ranges" in body["note"]
+    # node_mapper must never offer to widen lodan's scope for you.
+    assert "cannot widen" in body["note"]
+
+
+def test_lodan_distinguishes_unseen_from_unauthorized(monkeypatch):
+    with_lodan(monkeypatch, {"scan_id": 3, "ip": "192.168.68.200",
+                             "authorized": True, "found": False, "host": None})
+    body = run("lodan_lookup", "ipv4", "192.168.68.200").get_json()
+    assert body["entities"] == []
+    assert "never saw it" in body["note"]
+
+
+def test_lodan_domain_returns_addresses_and_refusals(monkeypatch):
+    with_lodan(monkeypatch, {
+        "scan_id": 3, "domain": "example.com", "authorized": True, "found": True,
+        "addresses": [{"ip": "192.168.68.54", "found": True, "service_count": 4}],
+        "cnames": [], "refused": [{"target": "cdn.vendor.net", "reason": "out of scope"}],
+        "error": None,
+        "subdomains": [{"subdomain": "mail.example.com", "seen_on": ["192.168.68.54:443"]}],
+    })
+    body = run("lodan_lookup", "domain", "example.com").get_json()
+    values = {(e["type"], e["value"]) for e in body["entities"]}
+    assert ("ipv4", "192.168.68.54") in values
+    assert ("domain", "mail.example.com") in values
+    assert "cdn.vendor.net" in body["note"]
+
+
+def test_lodan_accepts_internal_names(monkeypatch):
+    # .lan is refused by the public transforms and is exactly what a local
+    # workspace holds.
+    with_lodan(monkeypatch, {"scan_id": 3, "domain": "nas.lan", "authorized": True,
+                             "found": True, "addresses": [], "cnames": [],
+                             "refused": [], "error": None})
+    assert run("lodan_lookup", "host", "nas.lan").status_code == 200
+
+
+def test_lodan_is_not_clamped_to_the_enumeration_default(monkeypatch):
+    # A scanned host's record is bounded by its real attack surface; truncating
+    # it to the 12 that suit an open-ended enumeration would drop most of it.
+    many = dict(LODAN_HOST)
+    many["vulns"] = [{"port": 22, "cve": f"CVE-2026-{i:05d}", "confidence": 0.9}
+                     for i in range(40)]
+    with_lodan(monkeypatch, many)
+    body = run("lodan_lookup", "ipv4", "192.168.68.54").get_json()
+    assert len([e for e in body["entities"] if e["type"] == "cve"]) == 40
 
 
 def test_transform_rejects_wrong_input_type():

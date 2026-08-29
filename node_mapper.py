@@ -1043,6 +1043,13 @@ MAX_URL_LENGTH = 256
 ACTIVE_SCAN_ENABLED = os.environ.get("NM_ACTIVE_SCAN", "0") == "1"
 ACTIVE_SCAN_TIMEOUT = float(os.environ.get("NM_ACTIVE_SCAN_TIMEOUT", "1.0"))
 
+# A lodan instance (`lodan serve`) holding scan results for ranges the operator
+# owns. Unset means the lodan transforms list as unavailable rather than failing
+# when run.
+LODAN_URL = os.environ.get("LODAN_URL", "").rstrip("/")
+LODAN_TOKEN = os.environ.get("LODAN_TOKEN", "")
+LODAN_TIMEOUT = float(os.environ.get("LODAN_TIMEOUT", "20"))
+
 LOOKUP_CACHE_TTL = int(os.environ.get("NM_LOOKUP_CACHE_TTL", "600"))
 LOOKUP_CACHE_MAX = 512
 
@@ -1101,27 +1108,30 @@ def _source_label(url):
         return url
 
 
-def _fetch_json(url, timeout=None, allow_404=False):
+def _fetch_json(url, timeout=None, allow_404=False, headers=None, cache=True):
     """GET one of the pinned JSON sources, through the TTL cache.
 
     Returns None for a 404 when allow_404 is set: several sources use 404 to
     mean "nothing known about this target", which is an empty result rather
     than a failure.
     """
-    cached = _cache_get(url)
-    if cached is not None:
-        return cached[0]
+    if cache:
+        cached = _cache_get(url)
+        if cached is not None:
+            return cached[0]
 
     request_obj = urllib.request.Request(url, headers={
         "User-Agent": NET_USER_AGENT,
         "Accept": "application/json",
+        **(headers or {}),
     })
     try:
         with urllib.request.urlopen(request_obj, timeout=timeout or NET_TIMEOUT) as response:
             raw = response.read(MAX_LOOKUP_BYTES + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 404 and allow_404:
-            _cache_put(url, (None,))
+            if cache:
+                _cache_put(url, (None,))
             return None
         raise TransformSourceError(f"{_source_label(url)} returned HTTP {exc.code}.") from None
     except (TimeoutError, urllib.error.URLError, OSError) as exc:
@@ -1137,7 +1147,8 @@ def _fetch_json(url, timeout=None, allow_404=False):
         raise TransformSourceError(
             f"{_source_label(url)} returned a non-JSON response.") from None
 
-    _cache_put(url, (data,))
+    if cache:
+        _cache_put(url, (data,))
     return data
 
 
@@ -1154,8 +1165,13 @@ _INTERNAL_SUFFIXES = (
 )
 
 
-def _clean_hostname(value):
-    """Normalise a user-supplied domain/host down to a bare public hostname."""
+def _clean_hostname(value, allow_internal=False):
+    """Normalise a user-supplied domain/host down to a bare hostname.
+
+    `allow_internal` keeps names like `nas.lan`, which are refused for the
+    public sources (no third party can answer for them, and asking leaks
+    internal naming) but are exactly what a local lodan workspace holds.
+    """
     text = str(value or "").strip().lower()
     if not text:
         raise TransformInputError("Entity value is empty.")
@@ -1168,7 +1184,7 @@ def _clean_hostname(value):
         raise TransformInputError(f"{str(value)[:80]!r} is not a valid hostname.") from None
     if not _HOSTNAME_RE.match(text):
         raise TransformInputError(f"{str(value)[:80]!r} is not a valid public hostname.")
-    if text.endswith(_INTERNAL_SUFFIXES):
+    if text.endswith(_INTERNAL_SUFFIXES) and not allow_internal:
         raise TransformInputError(
             f"{text} is an internal name; no public source can resolve it.")
     return text
@@ -1186,6 +1202,19 @@ def _public_ip(value):
         raise TransformInputError(
             f"{addr} is not a public address -- refusing to send it to a third-party source.")
     return str(addr)
+
+
+def _any_ip(value):
+    """Validate an IP without the public-address guard.
+
+    The guard exists to keep internal addressing out of third-party query logs.
+    A lodan workspace is the operator's own record of their own ranges, so it is
+    the one source where a private address is the expected input.
+    """
+    try:
+        return str(ipaddress.ip_address(str(value or "").strip()))
+    except ValueError:
+        raise TransformInputError(f"{str(value)[:80]!r} is not an IP address.") from None
 
 
 def _scan_target(value):
@@ -1211,14 +1240,29 @@ def _valid_edge(edge):
     return True
 
 
-def _result_limit(params):
-    """The endpoint clamps results too; transforms use this to avoid asking a
-    source for far more than the client will keep."""
+def _result_limit(params, meta=None):
+    """How many entities a run may return.
+
+    The default cap suits an open-ended enumeration, where a source could hand
+    back thousands and the analyst wants a sample. A transform reading a bounded
+    local record -- one host's real attack surface -- says so with its own
+    default_limit / max_limit, because truncating that to twelve would silently
+    drop most of the answer.
+    """
+    meta = meta or {}
+    default = meta.get("default_limit", TRANSFORM_DEFAULT_LIMIT)
+    cap = meta.get("max_limit", TRANSFORM_MAX_LIMIT)
     try:
-        limit = int((params or {}).get("limit", TRANSFORM_DEFAULT_LIMIT))
+        limit = int((params or {}).get("limit", default))
     except (TypeError, ValueError):
-        limit = TRANSFORM_DEFAULT_LIMIT
-    return max(1, min(limit, TRANSFORM_MAX_LIMIT))
+        limit = default
+    return max(1, min(limit, cap))
+
+
+def _transform_available(meta):
+    """A transform may gate itself on configuration; the listing reports why."""
+    check = meta.get("available")
+    return bool(check()) if callable(check) else True
 
 
 # --- RDAP helpers -----------------------------------------------------------
@@ -1676,6 +1720,203 @@ def transform_tcp_scan(entity, params):
     }
 
 
+# --- lodan workspace --------------------------------------------------------
+#
+# The one source that is neither public nor third-party: a lodan instance
+# holding scans of ranges the operator owns. That inverts two rules that hold
+# everywhere else here -- private addresses and internal names are the expected
+# input, not a refusal -- and it is the only transform whose results describe
+# infrastructure the analyst is responsible for.
+#
+# node_mapper can only read. lodan's authorization model is an allowlist
+# enforced twice with no disable flag, and widening it is a deliberate operator
+# act through `lodan manage`; an integration that could add scope on demand
+# would make the allowlist decorative. An address outside it comes back with
+# authorized:false and this transform says so rather than offering to fix it.
+
+def _lodan_get(path, allow_404=False):
+    headers = {"X-Lodan-Token": LODAN_TOKEN} if LODAN_TOKEN else {}
+    return _fetch_json(
+        LODAN_URL + path, timeout=LODAN_TIMEOUT, allow_404=allow_404,
+        headers=headers,
+        # Not cached: unlike a public source, this one changes when the operator
+        # rescans, and a stale answer to "what is on my network" is the wrong
+        # kind of wrong.
+        cache=False,
+    )
+
+
+def _lodan_configured():
+    return bool(LODAN_URL)
+
+
+def _cve_entity(vuln):
+    """A CVE match, carrying the confidence that qualifies it.
+
+    lodan scores a match against a version-less CPE around 0.45 -- it matched
+    the product and nothing more. Dropping that number would turn "possibly,
+    if this build is ancient" into a flat assertion on the canvas.
+    """
+    props = {
+        "epss": vuln.get("epss"),
+        "priority": vuln.get("priority"),
+        "confidence": vuln.get("confidence"),
+    }
+    if vuln.get("kev"):
+        props["kev"] = "yes" + (f" ({vuln['kev_date_added']})" if vuln.get("kev_date_added") else "")
+    return _entity("cve", str(vuln.get("cve")), props)
+
+
+def _lodan_host(ip, params):
+    data = _lodan_get(f"/api/v1/host/{urllib.parse.quote(ip)}?include=all", allow_404=True)
+    if not isinstance(data, dict):
+        raise TransformSourceError(f"lodan has no host endpoint for {ip}.")
+    if not data.get("found"):
+        if not data.get("authorized"):
+            note = (f"{ip} is outside the lodan workspace's authorized_ranges. Authorize it "
+                    f"with `lodan manage`, then rescan -- node_mapper cannot widen that scope.")
+        else:
+            note = f"{ip} is in scope but lodan scan {data.get('scan_id')} never saw it."
+        return {"entities": [], "links": [], "note": note}
+
+    host = data.get("host") or {}
+    entities, links, edges = [], [], []
+    source_props = {}
+    for key, value in (("asn", host.get("asn")), ("geo", host.get("country"))):
+        if value:
+            source_props[key] = f"AS{value}" if key == "asn" else value
+    # Map onto the schema's own keys, or the values are stored but never shown.
+    # rdns is deliberately absent: it becomes its own node below.
+    operating_system = host.get("os_guess") or host.get("os_family")
+    if operating_system:
+        source_props["os"] = operating_system
+    if host.get("device_type"):
+        source_props["device"] = host["device_type"]
+
+    if host.get("rdns"):
+        entities.append(_entity("domain", str(host["rdns"]).rstrip(".").lower(), {}))
+        links.append(_link("rdns"))
+    if host.get("asn_org"):
+        entities.append(_entity("organization", host["asn_org"], {"country": host.get("country")}))
+        links.append(_link("netblock_owner"))
+
+    for service in data.get("services") or []:
+        port = service.get("port")
+        if port is None:
+            continue
+        entity = _port_entity(ip, int(port), protocol=service.get("proto") or "tcp",
+                              service=service.get("service"))
+        if service.get("banner"):
+            entity["properties"]["banner"] = str(service["banner"])[:300]
+        entities.append(entity)
+        links.append(_link("open_port"))
+
+    port_key = lambda p: ("port", f"{ip}:{int(p)}")  # noqa: E731
+
+    for cert in data.get("certs") or []:
+        fingerprint = cert.get("sha256")
+        if not fingerprint:
+            continue
+        entities.append(_entity("certificate", fingerprint, {
+            "subject": cert.get("subject"), "issuer": cert.get("issuer"),
+            "notAfter": cert.get("not_after"), "keyBits": cert.get("key_bits"),
+            "sigHash": cert.get("sig_algo"),
+        }, label=cert.get("subject") or fingerprint[:16]))
+        # None: a certificate hangs off the port that presented it, not off the
+        # host -- the edge below says which.
+        links.append(None)
+        if cert.get("port") is not None:
+            edges.append(_edge(port_key(cert["port"]), ("certificate", fingerprint),
+                               "presents_cert"))
+
+    for vuln in data.get("vulns") or []:
+        if not vuln.get("cve"):
+            continue
+        entities.append(_cve_entity(vuln))
+        links.append(None)
+        if vuln.get("port") is not None:
+            edges.append(_edge(port_key(vuln["port"]), ("cve", str(vuln["cve"])),
+                               "vulnerable_to"))
+
+    for finding in data.get("findings") or []:
+        category = finding.get("category") or "finding"
+        port = finding.get("port")
+        # Scoped like a port node: two hosts with the same missing header must
+        # not collapse into one node with edges to both.
+        value = f"{ip}:{port if port is not None else '-'}:{category}"
+        entities.append(_entity("finding", value, {
+            "severity": finding.get("severity"), "kind": category,
+            "evidence": json.dumps(finding.get("detail")) if finding.get("detail") else None,
+        }, label=finding.get("title") or category))
+        if port is None:
+            links.append(_link("has_finding"))
+        else:
+            links.append(None)
+            edges.append(_edge(port_key(port), ("finding", value), "has_finding"))
+
+    topology = data.get("topology") or {}
+    for sibling in topology.get("clock_siblings") or []:
+        other = sibling.get("ip")
+        if not other or other == ip:
+            continue
+        entities.append(_entity("ipv4", other, {}))
+        links.append(None)
+        # lodan's TCP-timestamp clustering: the two addresses answered with the
+        # same boot-time estimate. Undirected -- neither end is the primary.
+        edges.append(_edge(("ipv4", ip), ("ipv4", other), "same_machine", directed=False))
+
+    note = None
+    if topology.get("min_backend_count", 1) and topology.get("nat_suspected"):
+        note = (f"lodan flags {ip} as fronting at least "
+                f"{topology['min_backend_count']} machines.")
+    return {"entities": entities, "links": links, "edges": edges,
+            "sourceProperties": source_props, "note": note}
+
+
+def _lodan_domain(name, params):
+    data = _lodan_get(f"/api/v1/domain/{urllib.parse.quote(name)}?include=subdomains",
+                      allow_404=True)
+    if not isinstance(data, dict):
+        raise TransformSourceError(f"lodan has no domain endpoint for {name}.")
+
+    entities, links = [], []
+    for address in data.get("addresses") or []:
+        ip = address.get("ip")
+        if not ip:
+            continue
+        entities.append(_entity("ipv4", ip, {}))
+        links.append(_link("resolves_to"))
+    for subdomain in data.get("subdomains") or []:
+        sub = subdomain.get("subdomain")
+        if sub:
+            entities.append(_entity("domain", sub, {}))
+            links.append(_link("subdomain_of"))
+
+    notes = []
+    if not data.get("authorized"):
+        notes.append(f"{name} is not one of the workspace's authorized_domains.")
+    if not data.get("found"):
+        notes.append(f"lodan scan {data.get('scan_id')} did not resolve {name}.")
+    # Names lodan declined to follow because they leave the authorized domains:
+    # third-party infrastructure this name depends on, worth an analyst's eye.
+    refused = [r.get("target") for r in (data.get("refused") or []) if r.get("target")]
+    if refused:
+        notes.append("Refused as out-of-scope CNAME targets: " + ", ".join(refused[:5]) + ".")
+    return {"entities": entities, "links": links, "note": " ".join(notes) or None}
+
+
+def transform_lodan_lookup(entity, params):
+    """ipv4/domain/host -> what the operator's own lodan workspace recorded."""
+    if not _lodan_configured():
+        raise TransformInputError(
+            "No lodan instance configured. Point LODAN_URL at a running "
+            "`lodan serve` (and set LODAN_TOKEN if it requires one).")
+    value = entity.get("value")
+    if entity.get("type") == "ipv4":
+        return _lodan_host(_any_ip(value), params)
+    return _lodan_domain(_clean_hostname(value, allow_internal=True), params)
+
+
 # --- synthetic placeholders -------------------------------------------------
 #
 # No keyless source answers these honestly, so they still fabricate. Every one
@@ -1787,7 +2028,24 @@ TRANSFORMS = {
         "input_types": ["ipv4"],
         "source": "direct probe",
         "active": True,
+        "available": lambda: ACTIVE_SCAN_ENABLED,
+        "reason": "Disabled on this server. Restart it with NM_ACTIVE_SCAN=1.",
         "run": transform_tcp_scan,
+    },
+    "lodan_lookup": {
+        "name": "lodan Workspace Lookup",
+        "description": "Hosts, services, certificates, CVE matches and findings "
+                       "from your own lodan scans. Reads only -- it cannot start a "
+                       "scan or widen lodan's authorized ranges.",
+        "input_types": ["ipv4", "domain", "host"],
+        "source": "lodan workspace",
+        "available": _lodan_configured,
+        "reason": "No lodan instance configured. Set LODAN_URL on this server.",
+        # One host's real attack surface, not an open-ended enumeration: the
+        # default twelve would drop most of a scanned host's record.
+        "default_limit": 200,
+        "max_limit": 500,
+        "run": transform_lodan_lookup,
     },
     "to_emails": {
         "name": "Find Emails",
@@ -1829,9 +2087,10 @@ def api_list_transforms():
             "source": meta.get("source", ""),
             "synthetic": bool(meta.get("synthetic")),
             "active": bool(meta.get("active")),
-            # An active transform stays listed while disabled so the UI can say
-            # why it is unavailable instead of silently omitting it.
-            "available": (not meta.get("active")) or ACTIVE_SCAN_ENABLED,
+            # A gated transform stays listed while unavailable so the UI can say
+            # why instead of silently omitting it.
+            "available": _transform_available(meta),
+            "reason": "" if _transform_available(meta) else meta.get("reason", ""),
         }
         for tid, meta in TRANSFORMS.items()
     ]
@@ -1861,7 +2120,7 @@ def api_run_transform():
             400,
         )
 
-    limit = _result_limit(params)
+    limit = _result_limit(params, meta)
 
     try:
         result = meta["run"](entity, params)

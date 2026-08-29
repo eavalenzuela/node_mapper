@@ -3269,8 +3269,15 @@ function mergeTransformResults(sourceNode, transformId, data) {
             nodes[targetId].provenance = { source: provSource, createdAt: Date.now() };
             existingByKey[key] = targetId;
         }
-        const link = links[i] || links[0] || {};
-        connectTransformNodes(sourceNode.id, targetId, link.label || transformId, link.directed !== false, provSource);
+        // A null link means the result attaches to something other than the
+        // node the transform ran on -- a CVE hangs off its port, not the host.
+        // The edges[] below say where. Without this every result is forced into
+        // a spoke off the source, which is wrong more often than it is tidy.
+        const link = i < links.length ? links[i] : (links[0] || {});
+        if (link !== null) {
+            connectTransformNodes(sourceNode.id, targetId, link.label || transformId,
+                link.directed !== false, provSource);
+        }
     });
     // Edges whose endpoints are both results (or both already on the canvas):
     // 'this certificate covers that domain', 'these two addresses are one

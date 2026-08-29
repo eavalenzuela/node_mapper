@@ -100,10 +100,21 @@ Beyond plain diagramming, Node Mapper now works as a lightweight link-analysis t
   | Known Ports (passive) | ipv4 | internetdb.shodan.io — ports, hostnames, CVEs |
   | Domain → Archived URLs | domain | web.archive.org CDX index |
   | TCP Connect Scan (**active**) | ipv4 | direct probe — off unless `NM_ACTIVE_SCAN=1` |
+  | lodan Workspace Lookup | ipv4, domain, host | your own [lodan](https://github.com/eavalenzuela/lodan) scans — off unless `LODAN_URL` is set |
 
   No API keys and no extra packages are needed. Three transforms — **Find Emails**, **Reverse IP** and **Person → Social Profiles** — still fabricate their results, because no keyless source answers them honestly. They are tagged `synthetic` in the Transforms tab, prefixed with ⚠ in the context menu, and every node they create records `transform:synthetic:<id>` as its provenance.
 
   Only the TCP Connect Scan sends traffic to the subject; everything else talks to a third-party source. Private, loopback and link-local addresses, and internal names like `.local` or `.lan`, are refused by the passive transforms so internal addressing never reaches a third-party query log.
+
+### lodan workspace lookup
+
+The one source that is neither public nor third-party: a [lodan](https://github.com/eavalenzuela/lodan) instance holding scans of ranges you own. Point `LODAN_URL` at a running `lodan serve` and the transform pulls a host's services, TLS chain, CVE matches and exposure findings straight onto the canvas.
+
+It inverts two rules that hold everywhere else here — private addresses and internal names are the expected input, because that is what your own workspace contains. Results attach where they belong rather than all spoking off the host: a CVE hangs off the port it was found on, a certificate off the port that presented it, and two addresses sharing a TCP-timestamp clock are joined by a `same_machine` edge.
+
+CVE nodes carry lodan's `confidence` alongside the id. A match against a version-less CPE scores around 0.45 — it matched the product and nothing more — and dropping that number would turn "possibly, if this build is ancient" into a flat assertion.
+
+**It reads only.** lodan's authorization model is an allowlist enforced twice with no disable flag, and widening it is a deliberate act through `lodan manage`. An address outside that allowlist comes back with a note saying so; node_mapper offers no way to fix it from inside node_mapper, by design.
 - **Centrality & communities:** the **Analytics** tab computes degree / betweenness / closeness / PageRank with a ranked table, plus label-propagation communities. The **View** tab can color/size nodes by any metric or by community (data-driven encoding), with an on-canvas legend.
 - **Investigation workflow:** marquee select, copy/paste/duplicate, group/ungroup, double-click rename, right-click context menus, N-hop neighborhood selection, shortest paths by clicking endpoints, and pinned nodes excluded from layouts.
 - **Projects & collaboration:** save named projects/cases to the server (SQLite) with version history, optional account login, and autosave. Anonymous use keeps working without an account.
@@ -129,6 +140,9 @@ Beyond plain diagramming, Node Mapper now works as a lightweight link-analysis t
 | `NM_CRTSH_TIMEOUT` | `25` | crt.sh is slow on large domains |
 | `NM_ARCHIVE_TIMEOUT` | `20` | Wayback CDX timeout |
 | `NM_LOOKUP_CACHE_TTL` | `600` | Seconds a lookup result is reused before re-querying the source |
+| `LODAN_URL` | unset | Base URL of a `lodan serve` instance; unset disables the lodan transform |
+| `LODAN_TOKEN` | unset | Sent as `X-Lodan-Token`; required when lodan binds non-loopback |
+| `LODAN_TIMEOUT` | `20` | Timeout for lodan requests, seconds |
 
 ## Testing
 - JavaScript (layout engines + entity registry): `npm test` — uses Node's built-in test runner, no dependencies.

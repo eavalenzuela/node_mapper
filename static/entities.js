@@ -148,6 +148,16 @@
                 "key": "geo",
                 "label": "Geo",
                 "type": "string"
+            },
+            {
+                "key": "os",
+                "label": "OS",
+                "type": "string"
+            },
+            {
+                "key": "device",
+                "label": "Device type",
+                "type": "string"
             }
         ]
     },
@@ -168,6 +178,16 @@
             {
                 "key": "geo",
                 "label": "Geo",
+                "type": "string"
+            },
+            {
+                "key": "os",
+                "label": "OS",
+                "type": "string"
+            },
+            {
+                "key": "device",
+                "label": "Device type",
                 "type": "string"
             }
         ]
@@ -6205,6 +6225,11 @@
                 "key": "priority",
                 "label": "Priority",
                 "type": "string"
+            },
+            {
+                "key": "confidence",
+                "label": "Match confidence",
+                "type": "number"
             },
             {
                 "key": "summary",

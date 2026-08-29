@@ -152,6 +152,27 @@
         ]
     },
     {
+        "id": "ipv6",
+        "name": "IPv6 Address",
+        "category": "Network",
+        "color": "#4e79a7",
+        "shape": "rect",
+        "icon": "📡",
+        "valuePattern": "^[0-9a-fA-F:]+$",
+        "properties": [
+            {
+                "key": "asn",
+                "label": "ASN",
+                "type": "string"
+            },
+            {
+                "key": "geo",
+                "label": "Geo",
+                "type": "string"
+            }
+        ]
+    },
+    {
         "id": "port",
         "name": "Network Port",
         "category": "Network",

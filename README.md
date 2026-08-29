@@ -88,7 +88,22 @@ The server uses an in-memory graph (`GRAPH` in `node_mapper.py`). Data is not pe
 ## Link-analysis features
 Beyond plain diagramming, Node Mapper now works as a lightweight link-analysis tool:
 - **Typed entities:** every node is an instance of an entity type defined in `static/entities.js` (250+ types), each with an icon, color, default shape, a primary `value`, and a typed property schema. The library spans OSINT/identity/network plus **program & data flow** (UML structural & behavioral, flowchart, DFD) and **cloud environments** — compute/serverless (Lambda, EC2, containers), storage & data (S3, RDS, DynamoDB, queues/streams), networking (VPC, subnets, IGW, NAT/VPN/Transit gateways, load balancers, Route53, API Gateway, WAF), Kubernetes (pods, deployments, services, ingress…), IAM/security, DevOps, and observability. Drag a type from the categorized, searchable **Entity Palette**, or change a node's type in the property editor (with advisory value validation).
-- **Transforms:** right-click an entity (or use the **Transforms** tab) to run a transform that queries the server and expands the graph with new connected entities. Results merge additively, de-duplicate by type+value, and are tagged with provenance. Demo transforms run offline (synthetic data) via `/api/transform` and cover domain/host → IP, emails, subdomains, URLs, WHOIS; IPv4 → ports, reverse-IP domains, owning organization/ASN, and geolocation; and person → emails and social-profile URLs.
+- **Transforms:** right-click an entity (or use the **Transforms** tab) to run a transform that queries a real source and expands the graph with new connected entities. Results merge additively, de-duplicate by type+value, and are tagged with provenance. Facts about the entity you ran the transform *on* (a domain's registrar, an address's ASN or geo) are written back onto that node.
+
+  | Transform | Input | Source |
+  | --- | --- | --- |
+  | Resolve to IP | domain, host | system DNS (A + AAAA) |
+  | Enumerate Subdomains | domain | crt.sh, falling back to api.certspotter.com |
+  | WHOIS / RDAP Lookup | domain | rdap.org — registrar, contacts, nameservers |
+  | IP → Organization | ipv4 | rdap.org — netblock holder, CIDR, origin AS |
+  | Geolocate IP | ipv4 | ipwho.is |
+  | Known Ports (passive) | ipv4 | internetdb.shodan.io — ports, hostnames, CVEs |
+  | Domain → Archived URLs | domain | web.archive.org CDX index |
+  | TCP Connect Scan (**active**) | ipv4 | direct probe — off unless `NM_ACTIVE_SCAN=1` |
+
+  No API keys and no extra packages are needed. Three transforms — **Find Emails**, **Reverse IP** and **Person → Social Profiles** — still fabricate their results, because no keyless source answers them honestly. They are tagged `synthetic` in the Transforms tab, prefixed with ⚠ in the context menu, and every node they create records `transform:synthetic:<id>` as its provenance.
+
+  Only the TCP Connect Scan sends traffic to the subject; everything else talks to a third-party source. Private, loopback and link-local addresses, and internal names like `.local` or `.lan`, are refused by the passive transforms so internal addressing never reaches a third-party query log.
 - **Centrality & communities:** the **Analytics** tab computes degree / betweenness / closeness / PageRank with a ranked table, plus label-propagation communities. The **View** tab can color/size nodes by any metric or by community (data-driven encoding), with an on-canvas legend.
 - **Investigation workflow:** marquee select, copy/paste/duplicate, group/ungroup, double-click rename, right-click context menus, N-hop neighborhood selection, shortest paths by clicking endpoints, and pinned nodes excluded from layouts.
 - **Projects & collaboration:** save named projects/cases to the server (SQLite) with version history, optional account login, and autosave. Anonymous use keeps working without an account.
@@ -101,7 +116,19 @@ Beyond plain diagramming, Node Mapper now works as a lightweight link-analysis t
 - `GET|POST /api/projects`, `GET|PUT|DELETE /api/projects/<id>`, `GET /api/projects/<id>/versions`, `POST /api/projects/<id>/versions/<vid>/restore` — project/case persistence + history.
 - `POST /api/register`, `POST /api/login`, `POST /api/logout`, `GET /api/me` — optional session auth.
 
-Set `FLASK_DEBUG=1` to enable the dev debugger (off by default); `HOST`/`PORT` override the bind address.
+### Environment
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `HOST` / `PORT` | `127.0.0.1` / `5000` | Bind address |
+| `FLASK_DEBUG` | `0` | Dev debugger |
+| `SECRET_KEY` | random per process | Session cookie signing; sessions survive a restart only when set |
+| `NM_ACTIVE_SCAN` | `0` | Enables the TCP Connect Scan transform, the only one that probes the target |
+| `NM_ACTIVE_SCAN_TIMEOUT` | `1.0` | Per-port connect timeout, seconds |
+| `NM_NET_TIMEOUT` | `8` | Timeout for lookup sources, seconds |
+| `NM_CRTSH_TIMEOUT` | `25` | crt.sh is slow on large domains |
+| `NM_ARCHIVE_TIMEOUT` | `20` | Wayback CDX timeout |
+| `NM_LOOKUP_CACHE_TTL` | `600` | Seconds a lookup result is reused before re-querying the source |
 
 ## Testing
 - JavaScript (layout engines + entity registry): `npm test` — uses Node's built-in test runner, no dependencies.

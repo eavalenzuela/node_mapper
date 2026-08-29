@@ -4,20 +4,32 @@ A Flask application that serves the static client and provides:
   * the original in-memory graph endpoints (/, /nodes, /edges, /graph)
   * graph analytics (/analytics) and per-node centrality (/api/centrality)
   * SQLite-backed projects, version history, and optional session auth
-  * an offline, deterministic transform framework (/api/transform[s])
+  * a transform framework (/api/transform[s]) over keyless public sources
 
-The transforms perform NO real network calls. They return synthetic,
-deterministic data so the application works fully offline.
+Transforms query real sources -- system DNS, RDAP, crt.sh, the Wayback CDX
+index, Shodan's InternetDB, ipwho.is -- with no API keys and no extra
+packages. Three of them (to_emails, reverse_ip, person_to_social) still return
+synthetic data because nothing keyless answers them honestly; those are
+flagged synthetic in the listing and in every response. Only tcp_scan touches
+the subject, and only when NM_ACTIVE_SCAN=1.
 """
 
 import os
+import re
 import json
+import time
 import queue
+import socket
 import secrets
 import sqlite3
 import hashlib
+import ipaddress
 import threading
-from collections import deque
+import urllib.error
+import urllib.parse
+import urllib.request
+from concurrent import futures
+from collections import deque, OrderedDict
 from datetime import datetime, timezone
 from uuid import uuid4
 from heapq import heappop, heappush
@@ -998,43 +1010,632 @@ def api_centrality():
 
 
 # ============================================================================
-# Transforms (offline, deterministic — NO real network calls)
+# Transforms
 # ============================================================================
+#
+# Transforms query real, keyless public sources: the system resolver, RDAP via
+# rdap.org, certificate transparency via crt.sh, the Wayback CDX index, Shodan's
+# InternetDB and ipwho.is. No API keys, no registration, no extra packages.
+#
+# Three transforms -- to_emails, reverse_ip and person_to_social -- still return
+# synthetic data, because no keyless source answers those questions honestly.
+# They carry synthetic:true in the listing and in every response so the client
+# can mark what they create; fabricated nodes must never sit unlabelled next to
+# real ones in an investigation graph.
+#
+# Everything below is reachable through an UNAUTHENTICATED endpoint, so two
+# rules hold throughout:
+#   * inputs are validated before they reach a URL or a socket, and private /
+#     loopback / reserved addresses are refused -- both to keep internal
+#     addressing out of third-party query logs, and to stop the server being
+#     used to probe the network it sits inside.
+#   * only one transform touches the subject at all (tcp_scan), and it is off
+#     unless the operator sets NM_ACTIVE_SCAN=1. Everything else talks to the
+#     source, never to the target.
 
-def _seed_int(*parts):
-    """Deterministic integer seed derived from the joined string parts."""
-    raw = "::".join(str(p) for p in parts).encode("utf-8")
-    return int(hashlib.sha256(raw).hexdigest(), 16)
+NET_TIMEOUT = float(os.environ.get("NM_NET_TIMEOUT", "8"))
+# crt.sh answers large domains slowly enough that the default would time out on
+# results it was going to return.
+CRTSH_TIMEOUT = float(os.environ.get("NM_CRTSH_TIMEOUT", "25"))
+ARCHIVE_TIMEOUT = float(os.environ.get("NM_ARCHIVE_TIMEOUT", "20"))
+NET_USER_AGENT = "node-mapper/1.0 (+https://github.com/eavalenzuela/node_mapper)"
+MAX_LOOKUP_BYTES = 4 * 1024 * 1024
+MAX_URL_LENGTH = 256
+
+ACTIVE_SCAN_ENABLED = os.environ.get("NM_ACTIVE_SCAN", "0") == "1"
+ACTIVE_SCAN_TIMEOUT = float(os.environ.get("NM_ACTIVE_SCAN_TIMEOUT", "1.0"))
+
+LOOKUP_CACHE_TTL = int(os.environ.get("NM_LOOKUP_CACHE_TTL", "600"))
+LOOKUP_CACHE_MAX = 512
+
+TRANSFORM_DEFAULT_LIMIT = 12
+TRANSFORM_MAX_LIMIT = 50
 
 
-def _synthetic_octet(seed, salt):
-    """Return an IPv4 octet in 1..254 derived deterministically."""
-    return 1 + (_seed_int(seed, salt) % 254)
+class TransformInputError(Exception):
+    """Bad request: unusable value, refused target, or a disabled transform."""
 
+    status = 400
+
+
+class TransformSourceError(Exception):
+    """The upstream source failed: unreachable, too slow, or unparseable."""
+
+    status = 502
+
+
+# --- lookup cache -----------------------------------------------------------
+#
+# Sources are shared and mostly rate-limited (crt.sh in particular), and running
+# the same transform twice while arranging a graph is normal. Values are always
+# 1-tuples so a cached "nothing found" is distinguishable from a cache miss.
+
+_lookup_cache = OrderedDict()
+_lookup_cache_lock = threading.Lock()
+
+
+def _cache_get(key):
+    with _lookup_cache_lock:
+        hit = _lookup_cache.get(key)
+        if hit is None:
+            return None
+        expires, value = hit
+        if expires < time.time():
+            _lookup_cache.pop(key, None)
+            return None
+        _lookup_cache.move_to_end(key)
+        return value
+
+
+def _cache_put(key, value):
+    with _lookup_cache_lock:
+        _lookup_cache[key] = (time.time() + LOOKUP_CACHE_TTL, value)
+        _lookup_cache.move_to_end(key)
+        while len(_lookup_cache) > LOOKUP_CACHE_MAX:
+            _lookup_cache.popitem(last=False)
+
+
+def _source_label(url):
+    try:
+        return urllib.parse.urlsplit(url).netloc or url
+    except ValueError:
+        return url
+
+
+def _fetch_json(url, timeout=None, allow_404=False):
+    """GET one of the pinned JSON sources, through the TTL cache.
+
+    Returns None for a 404 when allow_404 is set: several sources use 404 to
+    mean "nothing known about this target", which is an empty result rather
+    than a failure.
+    """
+    cached = _cache_get(url)
+    if cached is not None:
+        return cached[0]
+
+    request_obj = urllib.request.Request(url, headers={
+        "User-Agent": NET_USER_AGENT,
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(request_obj, timeout=timeout or NET_TIMEOUT) as response:
+            raw = response.read(MAX_LOOKUP_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404 and allow_404:
+            _cache_put(url, (None,))
+            return None
+        raise TransformSourceError("%s returned HTTP %s." % (_source_label(url), exc.code))
+    except (urllib.error.URLError, socket.timeout, OSError) as exc:
+        reason = getattr(exc, "reason", None) or exc.__class__.__name__
+        raise TransformSourceError("%s is unreachable (%s)." % (_source_label(url), reason))
+
+    if len(raw) > MAX_LOOKUP_BYTES:
+        raise TransformSourceError(
+            "%s returned more than %d KiB." % (_source_label(url), MAX_LOOKUP_BYTES // 1024))
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except ValueError:
+        raise TransformSourceError("%s returned a non-JSON response." % _source_label(url))
+
+    _cache_put(url, (data,))
+    return data
+
+
+# --- input validation -------------------------------------------------------
+
+_HOSTNAME_RE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+
+# Suffixes that only mean something inside a private network. A third-party
+# source cannot answer for them, and asking leaks internal naming.
+_INTERNAL_SUFFIXES = (
+    ".local", ".localdomain", ".internal", ".intranet", ".lan", ".home",
+    ".home.arpa", ".corp", ".test", ".invalid", ".example",
+)
+
+
+def _clean_hostname(value):
+    """Normalise a user-supplied domain/host down to a bare public hostname."""
+    text = str(value or "").strip().lower()
+    if not text:
+        raise TransformInputError("Entity value is empty.")
+    if "://" in text:  # a pasted URL rather than a bare name
+        text = urllib.parse.urlsplit(text).netloc or text
+    text = text.split("/")[0].split("@")[-1].split(":")[0].rstrip(".")
+    try:
+        text = text.encode("idna").decode("ascii")
+    except (UnicodeError, UnicodeDecodeError):
+        raise TransformInputError("%r is not a valid hostname." % str(value)[:80])
+    if not _HOSTNAME_RE.match(text):
+        raise TransformInputError("%r is not a valid public hostname." % str(value)[:80])
+    if text.endswith(_INTERNAL_SUFFIXES):
+        raise TransformInputError(
+            "%s is an internal name; no public source can resolve it." % text)
+    return text
+
+
+def _public_ip(value):
+    """Validate an IP and refuse anything a public source has no business seeing."""
+    try:
+        addr = ipaddress.ip_address(str(value or "").strip())
+    except ValueError:
+        raise TransformInputError("%r is not an IP address." % str(value)[:80])
+    # is_global already excludes private, loopback, link-local and reserved
+    # ranges; multicast is checked separately because it is global-but-useless.
+    if not addr.is_global or addr.is_multicast:
+        raise TransformInputError(
+            "%s is not a public address -- refusing to send it to a third-party source." % addr)
+    return str(addr)
+
+
+def _scan_target(value):
+    """Validate an active-scan target. Private ranges are allowed here: mapping
+    your own network is the reason the operator turned scanning on."""
+    try:
+        addr = ipaddress.ip_address(str(value or "").strip())
+    except ValueError:
+        raise TransformInputError("%r is not an IP address." % str(value)[:80])
+    if addr.is_multicast or addr.is_unspecified:
+        raise TransformInputError("%s is not a scannable host address." % addr)
+    return str(addr)
+
+
+def _result_limit(params):
+    """The endpoint clamps results too; transforms use this to avoid asking a
+    source for far more than the client will keep."""
+    try:
+        limit = int((params or {}).get("limit", TRANSFORM_DEFAULT_LIMIT))
+    except (TypeError, ValueError):
+        limit = TRANSFORM_DEFAULT_LIMIT
+    return max(1, min(limit, TRANSFORM_MAX_LIMIT))
+
+
+# --- RDAP helpers -----------------------------------------------------------
+
+def _vcard_field(rdap_entity, field):
+    """Pull one field out of an RDAP entity's jCard (its vcardArray)."""
+    card = rdap_entity.get("vcardArray")
+    if not isinstance(card, list) or len(card) < 2 or not isinstance(card[1], list):
+        return None
+    for item in card[1]:
+        if isinstance(item, list) and len(item) >= 4 and item[0] == field:
+            value = item[3]
+            if isinstance(value, list):
+                value = " ".join(str(part) for part in value if part)
+            text = str(value or "").strip()
+            if text:
+                return text
+    return None
+
+
+def _rdap_entities(node, role):
+    """Every RDAP entity carrying `role`, at any depth -- registrars nest their
+    abuse contact inside themselves rather than listing it at the top level."""
+    found = []
+
+    def walk(items):
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            if role in (item.get("roles") or []):
+                found.append(item)
+            walk(item.get("entities"))
+
+    walk(node.get("entities"))
+    return found
+
+
+def _rdap_event(node, action):
+    for event in node.get("events") or []:
+        if isinstance(event, dict) and event.get("eventAction") == action:
+            return str(event.get("eventDate") or "").strip() or None
+    return None
+
+
+# --- result helpers ---------------------------------------------------------
 
 def _entity(etype, value, properties=None):
-    return {"type": etype, "value": value, "properties": properties or {}}
+    # Empty values are dropped rather than emitted: a source that has no country
+    # for a netblock should leave the field unset, not stamp "" over whatever the
+    # analyst typed there. 0 and False are kept -- only None and "" go.
+    props = {k: v for k, v in (properties or {}).items() if v is not None and v != ""}
+    return {"type": etype, "value": value, "properties": props}
 
 
 def _link(label, directed=True):
     return {"label": label, "directed": directed}
 
 
-def transform_to_ip(entity, params):
-    """domain/host -> 1-2 synthetic IPv4 addresses."""
-    val = entity.get("value", "")
-    count = 1 + (_seed_int(val, "ipcount") % 2)  # 1 or 2
-    entities = []
-    for i in range(count):
-        ip = "{}.{}.{}.{}".format(
-            _synthetic_octet(val, f"a{i}"),
-            _synthetic_octet(val, f"b{i}"),
-            _synthetic_octet(val, f"c{i}"),
-            _synthetic_octet(val, f"d{i}"),
-        )
-        entities.append(_entity("ipv4", ip, {"resolvedFrom": val}))
-    return {"entities": entities, "links": [_link("resolves_to") for _ in entities]}
+def _seed_int(*parts):
+    """Deterministic integer seed derived from the joined string parts.
 
+    Only the three synthetic placeholder transforms still use this.
+    """
+    raw = "::".join(str(p) for p in parts).encode("utf-8")
+    return int(hashlib.sha256(raw).hexdigest(), 16)
+
+
+# --- real transforms --------------------------------------------------------
+
+def transform_to_ip(entity, params):
+    """domain/host -> the A and AAAA records the system resolver returns."""
+    name = _clean_hostname(entity.get("value"))
+    try:
+        infos = socket.getaddrinfo(name, None, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise TransformSourceError(
+            "DNS lookup for %s failed (%s)." % (name, exc.strerror or exc))
+    except OSError as exc:
+        raise TransformSourceError("DNS lookup for %s failed (%s)." % (name, exc))
+
+    entities, links, seen = [], [], set()
+    for family, _stype, _proto, _canon, sockaddr in infos:
+        address = sockaddr[0]
+        if address in seen:
+            continue
+        seen.add(address)
+        entities.append(_entity(
+            "ipv6" if family == socket.AF_INET6 else "ipv4", address, {"resolvedFrom": name}))
+        links.append(_link("resolves_to"))
+    if not entities:
+        raise TransformSourceError("%s has no A or AAAA records." % name)
+    return {"entities": entities, "links": links}
+
+
+def _ct_names(raw_names, domain):
+    """Filter certificate DNS names down to real subdomains of `domain`."""
+    suffix = "." + domain
+    names = set()
+    for raw in raw_names:
+        # A wildcard cert contributes '*.example.com', which collapses to the
+        # apex -- a subdomain transform must not return its own input.
+        name = str(raw or "").strip().lower().lstrip("*.").rstrip(".")
+        if name != domain and name.endswith(suffix) and _HOSTNAME_RE.match(name):
+            names.add(name)
+    return names
+
+
+def _subdomains_from_crtsh(domain):
+    rows = _fetch_json(
+        "https://crt.sh/?q=%s&output=json" % urllib.parse.quote("%." + domain),
+        timeout=CRTSH_TIMEOUT)
+    if not isinstance(rows, list):
+        raise TransformSourceError("crt.sh returned an unexpected document.")
+    raw = []
+    for row in rows:
+        if isinstance(row, dict):
+            # One certificate can name many hosts; crt.sh newline-joins them.
+            raw.extend(str(row.get("name_value", "")).splitlines())
+    return _ct_names(raw, domain)
+
+
+def _subdomains_from_certspotter(domain):
+    rows = _fetch_json(
+        "https://api.certspotter.com/v1/issuances?domain=%s&include_subdomains=true"
+        "&expand=dns_names" % urllib.parse.quote(domain))
+    if not isinstance(rows, list):
+        raise TransformSourceError("api.certspotter.com returned an unexpected document.")
+    raw = []
+    for row in rows:
+        if isinstance(row, dict):
+            raw.extend(row.get("dns_names") or [])
+    return _ct_names(raw, domain)
+
+
+def transform_to_subdomains(entity, params):
+    """domain -> names seen in Certificate Transparency logs.
+
+    crt.sh is the better index but is down often enough that a single-source
+    transform would fail most weeks; CertSpotter covers the same logs keyless.
+    """
+    domain = _clean_hostname(entity.get("value"))
+    note = None
+    try:
+        names = _subdomains_from_crtsh(domain)
+    except TransformSourceError as crtsh_error:
+        try:
+            names = _subdomains_from_certspotter(domain)
+        except TransformSourceError as certspotter_error:
+            raise TransformSourceError(
+                "Both certificate-transparency sources failed -- %s %s"
+                % (crtsh_error, certspotter_error))
+        note = "crt.sh failed (%s) -- these came from api.certspotter.com." % crtsh_error
+
+    # Shallowest first: 'mail.example.com' is more useful than a four-label
+    # build artefact when the result set is about to be clamped.
+    ordered = sorted(names, key=lambda n: (n.count("."), n))
+    entities = [_entity("domain", name, {}) for name in ordered]
+    if not entities:
+        note = "No certificate-transparency record names a subdomain of %s." % domain
+    return {
+        "entities": entities,
+        "links": [_link("subdomain_of") for _ in entities],
+        "note": note,
+    }
+
+
+def transform_whois(entity, params):
+    """domain -> registrar, contacts and nameservers, from RDAP."""
+    domain = _clean_hostname(entity.get("value"))
+    data = _fetch_json(
+        "https://rdap.org/domain/%s" % urllib.parse.quote(domain), allow_404=True)
+    if not isinstance(data, dict):
+        return {"entities": [], "links": [],
+                "note": "No RDAP record exists for %s." % domain}
+
+    entities, links, source_props = [], [], {}
+
+    registrars = _rdap_entities(data, "registrar")
+    if registrars:
+        name = _vcard_field(registrars[0], "fn") or registrars[0].get("handle")
+        if name:
+            entities.append(_entity("organization", name, {"domain": domain}))
+            links.append(_link("registrar"))
+            source_props["registrar"] = name
+
+    seen_emails = set()
+    for role in ("abuse", "registrant", "administrative", "technical"):
+        for contact in _rdap_entities(data, role):
+            address = _vcard_field(contact, "email")
+            if address and address.lower() not in seen_emails:
+                seen_emails.add(address.lower())
+                entities.append(_entity("email", address, {"displayName": "%s contact" % role}))
+                links.append(_link("%s_contact" % role))
+
+    for nameserver in (data.get("nameservers") or [])[:8]:
+        name = str((nameserver or {}).get("ldhName") or "").strip().lower().rstrip(".")
+        if name:
+            entities.append(_entity("host", name, {"ip": ""}))
+            links.append(_link("nameserver"))
+
+    for action, key in (("registration", "registered"), ("expiration", "expires")):
+        value = _rdap_event(data, action)
+        if value:
+            source_props[key] = value
+
+    note = None
+    if not entities:
+        note = ("RDAP holds a record for %s but names no registrar, contact or "
+                "nameserver -- registries commonly redact all three." % domain)
+    return {"entities": entities, "links": links,
+            "sourceProperties": source_props, "note": note}
+
+
+def transform_to_asn(entity, params):
+    """ipv4 -> the organisation holding the netblock, from RDAP."""
+    ip = _public_ip(entity.get("value"))
+    data = _fetch_json("https://rdap.org/ip/%s" % urllib.parse.quote(ip), allow_404=True)
+    if not isinstance(data, dict):
+        return {"entities": [], "links": [], "note": "No RDAP record covers %s." % ip}
+
+    org = None
+    for role in ("registrant", "administrative", "technical", "abuse"):
+        for contact in _rdap_entities(data, role):
+            org = _vcard_field(contact, "fn")
+            if org:
+                break
+        if org:
+            break
+    label = org or str(data.get("name") or "").strip() or str(data.get("handle") or "").strip()
+    if not label:
+        return {"entities": [], "links": [],
+                "note": "RDAP names no organisation for %s." % ip}
+
+    cidrs = []
+    for block in data.get("cidr0_cidrs") or []:
+        if not isinstance(block, dict):
+            continue
+        prefix = block.get("v4prefix") or block.get("v6prefix")
+        length = block.get("length")
+        if prefix and length is not None:
+            cidrs.append("%s/%s" % (prefix, length))
+
+    country = str(data.get("country") or "").strip()
+    props = {"country": country}
+    if cidrs:
+        props["netblock"] = ", ".join(cidrs)
+    if data.get("handle"):
+        props["handle"] = str(data["handle"])
+
+    source_props = {}
+    # ARIN publishes the originating AS; the other RIRs mostly do not, so this
+    # is best-effort rather than a guarantee.
+    origins = [str(a) for a in (data.get("arin_originas0_originautnums") or []) if a]
+    if origins:
+        source_props["asn"] = "AS" + origins[0]
+    if country:
+        source_props["geo"] = country
+
+    return {"entities": [_entity("organization", label, props)],
+            "links": [_link("netblock_owner")],
+            "sourceProperties": source_props}
+
+
+def transform_geolocate(entity, params):
+    """ipv4 -> approximate location, from ipwho.is."""
+    ip = _public_ip(entity.get("value"))
+    data = _fetch_json("https://ipwho.is/%s" % urllib.parse.quote(ip))
+    if not isinstance(data, dict) or data.get("success") is False:
+        reason = (data or {}).get("message") or "no reason given"
+        raise TransformSourceError("ipwho.is could not locate %s (%s)." % (ip, reason))
+
+    lat, lng = data.get("latitude"), data.get("longitude")
+    if lat is None or lng is None:
+        return {"entities": [], "links": [],
+                "note": "ipwho.is has no coordinates for %s." % ip}
+
+    parts = [str(data.get(k) or "").strip() for k in ("city", "region", "country")]
+    label = ", ".join(p for p in parts if p) or ip
+    # The map view reads properties.lat / properties.lng -- these key names are
+    # load-bearing, do not rename them to lon/latitude.
+    return {
+        "entities": [_entity("location", label, {"lat": lat, "lng": lng, "address": label})],
+        "links": [_link("located_in")],
+        "sourceProperties": {"geo": label},
+    }
+
+
+# Port -> service name is the IANA assignment, not an observed banner: it says
+# what usually listens there, which is why the property is named accordingly.
+WELL_KNOWN_PORTS = {
+    21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns", 80: "http",
+    110: "pop3", 135: "msrpc", 139: "netbios-ssn", 143: "imap", 443: "https",
+    445: "smb", 465: "smtps", 587: "submission", 631: "ipp", 993: "imaps",
+    995: "pop3s", 1433: "mssql", 1521: "oracle", 2049: "nfs", 2222: "ssh-alt",
+    3000: "http-dev", 3306: "mysql", 3389: "rdp", 5432: "postgres",
+    5900: "vnc", 6379: "redis", 8000: "http-alt", 8080: "http-alt",
+    8443: "https-alt", 9200: "elasticsearch", 11211: "memcached",
+    27017: "mongodb",
+}
+
+
+def transform_known_ports(entity, params):
+    """ipv4 -> ports Shodan has already observed open. Sends nothing to the target."""
+    ip = _public_ip(entity.get("value"))
+    data = _fetch_json(
+        "https://internetdb.shodan.io/%s" % urllib.parse.quote(ip), allow_404=True)
+    if not isinstance(data, dict):
+        return {"entities": [], "links": [],
+                "note": "Shodan's InternetDB has no record of %s." % ip}
+
+    entities, links = [], []
+    for port in (data.get("ports") or []):
+        try:
+            number = int(port)
+        except (TypeError, ValueError):
+            continue
+        props = {"protocol": "tcp"}
+        service = WELL_KNOWN_PORTS.get(number)
+        if service:
+            props["service"] = service
+        entities.append(_entity("port", str(number), props))
+        links.append(_link("open_port"))
+
+    for hostname in (data.get("hostnames") or [])[:10]:
+        name = str(hostname or "").strip().lower().rstrip(".")
+        if name and _HOSTNAME_RE.match(name):
+            entities.append(_entity("domain", name, {}))
+            links.append(_link("hostname"))
+
+    source_props = {}
+    vulns = [str(v) for v in (data.get("vulns") or []) if v]
+    if vulns:
+        source_props["vulns"] = ", ".join(vulns[:20])
+    tags = [str(t) for t in (data.get("tags") or []) if t]
+    if tags:
+        source_props["tags"] = ", ".join(tags[:10])
+
+    note = None
+    if not entities:
+        note = "InternetDB knows %s but lists no open port or hostname." % ip
+    return {"entities": entities, "links": links,
+            "sourceProperties": source_props, "note": note}
+
+
+def transform_to_url(entity, params):
+    """domain -> URLs the Wayback Machine has actually archived."""
+    domain = _clean_hostname(entity.get("value"))
+    # filter=statuscode:200 keeps the noise down: without it the index hands back
+    # every 404 and spam path anyone ever crawled under the domain.
+    # Ask for more rows than the caller wants: the length filter below discards
+    # some, and the endpoint clamps back down to the real limit afterwards.
+    url = ("https://web.archive.org/cdx/search/cdx?url=%s&matchType=domain"
+           "&output=json&fl=original&collapse=urlkey&filter=statuscode:200&limit=%d"
+           % (urllib.parse.quote(domain), _result_limit(params) * 5))
+    rows = _fetch_json(url, timeout=ARCHIVE_TIMEOUT)
+    if not isinstance(rows, list) or not rows:
+        return {"entities": [], "links": [],
+                "note": "The Wayback Machine has nothing archived for %s." % domain}
+
+    entities, links, seen = [], [], set()
+    for row in rows[1:]:  # row 0 is the CDX column header
+        if not isinstance(row, list) or not row:
+            continue
+        candidate = str(row[0]).strip()
+        if not candidate.lower().startswith(("http://", "https://")) or candidate in seen:
+            continue
+        # The archive holds spam paths kilobytes long -- real URLs, but each one
+        # becomes a node label here, so anything past a sane length is dropped.
+        if len(candidate) > MAX_URL_LENGTH:
+            continue
+        seen.add(candidate)
+        entities.append(_entity("url", candidate, {"status": "archived"}))
+        links.append(_link("hosts_url"))
+    return {"entities": entities, "links": links,
+            "note": None if entities else
+                    "The Wayback Machine has nothing archived for %s." % domain}
+
+
+COMMON_SCAN_PORTS = (
+    21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 587, 993, 995,
+    1433, 3306, 3389, 5432, 5900, 6379, 8000, 8080, 8443, 9200, 27017,
+)
+
+
+def transform_tcp_scan(entity, params):
+    """ipv4 -> ports accepting a TCP connection right now.
+
+    The only transform that touches the subject rather than a third-party
+    source, which is why it stays off until the operator opts in.
+    """
+    if not ACTIVE_SCAN_ENABLED:
+        raise TransformInputError(
+            "Active scanning is disabled. Restart the server with NM_ACTIVE_SCAN=1 "
+            "to enable it.")
+    ip = _scan_target(entity.get("value"))
+
+    def probe(port):
+        try:
+            with socket.create_connection((ip, port), timeout=ACTIVE_SCAN_TIMEOUT):
+                return port
+        except OSError:
+            return None
+
+    # Sequentially this is 26 ports x the timeout; the pool keeps a full sweep
+    # inside a couple of seconds.
+    with futures.ThreadPoolExecutor(max_workers=16) as pool:
+        open_ports = sorted(p for p in pool.map(probe, COMMON_SCAN_PORTS) if p)
+
+    entities = []
+    for port in open_ports:
+        props = {"protocol": "tcp"}
+        service = WELL_KNOWN_PORTS.get(port)
+        if service:
+            props["service"] = service
+        entities.append(_entity("port", str(port), props))
+    return {
+        "entities": entities,
+        "links": [_link("open_port") for _ in entities],
+        "note": None if entities else
+                "No common TCP port accepted a connection on %s." % ip,
+    }
+
+
+# --- synthetic placeholders -------------------------------------------------
+#
+# No keyless source answers these honestly, so they still fabricate. Every one
+# is flagged synthetic in the registry, which is what puts the warning in the
+# UI and the 'synthetic:' marker in node provenance.
 
 def transform_to_emails(entity, params):
     """domain/person -> 2-3 synthetic email addresses."""
@@ -1056,195 +1657,121 @@ def transform_to_emails(entity, params):
     return {"entities": entities, "links": [_link("has_email") for _ in entities]}
 
 
-def transform_to_subdomains(entity, params):
-    """domain -> 3 synthetic subdomains."""
-    val = entity.get("value", "")
-    prefixes = ["www", "mail", "api", "dev", "vpn", "shop"]
-    start = _seed_int(val, "substart") % len(prefixes)
-    entities = []
-    for i in range(3):
-        prefix = prefixes[(start + i) % len(prefixes)]
-        entities.append(_entity("domain", f"{prefix}.{val}", {"parent": val}))
-    return {"entities": entities, "links": [_link("subdomain_of") for _ in entities]}
-
-
-def transform_to_ports(entity, params):
-    """ipv4 -> common open ports."""
-    val = entity.get("value", "")
-    common = [
-        (22, "ssh"),
-        (80, "http"),
-        (443, "https"),
-    ]
-    entities = []
-    for port, service in common:
-        entities.append(
-            _entity("port", str(port), {"service": service, "host": val})
-        )
-    return {"entities": entities, "links": [_link("open_port") for _ in entities]}
-
-
-def transform_whois(entity, params):
-    """domain -> 1 registrant person + 1 phone."""
-    val = entity.get("value", "")
-    first = ["Alex", "Jordan", "Taylor", "Morgan", "Casey", "Riley"]
-    last = ["Smith", "Nguyen", "Patel", "Garcia", "Khan", "Jones"]
-    fn = first[_seed_int(val, "fn") % len(first)]
-    ln = last[_seed_int(val, "ln") % len(last)]
-    person_name = f"{fn} {ln}"
-    area = 200 + (_seed_int(val, "area") % 800)
-    mid = 100 + (_seed_int(val, "mid") % 900)
-    last4 = 1000 + (_seed_int(val, "last4") % 9000)
-    phone = f"+1-{area}-{mid}-{last4}"
-    entities = [
-        _entity("person", person_name, {"role": "registrant", "domain": val}),
-        _entity("phone", phone, {"role": "registrant", "domain": val}),
-    ]
-    links = [_link("registrant"), _link("registrant_phone")]
-    return {"entities": entities, "links": links}
-
-
 def transform_reverse_ip(entity, params):
-    """ipv4 -> 1-2 synthetic domains that resolve to it (reverse DNS / PTR)."""
+    """ipv4 -> 2-3 synthetic domains sharing the address."""
     val = entity.get("value", "")
-    tlds = ["com", "net", "io", "org"]
-    words = ["acme", "globex", "initech", "umbrella", "hooli", "stark"]
-    count = 1 + (_seed_int(val, "revcount") % 2)  # 1 or 2
+    words = ["nimbus", "harbor", "atlas", "vertex", "quarry", "beacon", "cinder"]
+    tlds = [".com", ".net", ".io", ".org"]
+    count = 2 + (_seed_int(val, "revcount") % 2)
     entities = []
     for i in range(count):
-        word = words[_seed_int(val, f"revw{i}") % len(words)]
-        tld = tlds[_seed_int(val, f"revt{i}") % len(tlds)]
-        entities.append(_entity("domain", f"{word}.{tld}", {"resolvesTo": val}))
-    return {"entities": entities, "links": [_link("resolves_from") for _ in entities]}
-
-
-def transform_to_asn(entity, params):
-    """ipv4 -> the owning organization / ASN (synthetic)."""
-    val = entity.get("value", "")
-    orgs = [
-        "Cloudflare, Inc.", "Amazon.com, Inc.", "Google LLC", "Hetzner Online GmbH",
-        "OVH SAS", "DigitalOcean, LLC", "Akamai Technologies",
-    ]
-    org = orgs[_seed_int(val, "asnorg") % len(orgs)]
-    asn = 1000 + (_seed_int(val, "asn") % 64000)
-    entity_out = _entity(
-        "organization", org, {"asn": f"AS{asn}", "role": "network operator", "ip": val}
-    )
-    return {"entities": [entity_out], "links": [_link("announced_by")]}
-
-
-def transform_geolocate(entity, params):
-    """ipv4 -> an approximate geographic location (synthetic)."""
-    val = entity.get("value", "")
-    cities = [
-        ("San Francisco, US", 37.7749, -122.4194),
-        ("Ashburn, US", 39.0438, -77.4874),
-        ("Frankfurt, DE", 50.1109, 8.6821),
-        ("Amsterdam, NL", 52.3676, 4.9041),
-        ("Singapore, SG", 1.3521, 103.8198),
-        ("London, GB", 51.5074, -0.1278),
-    ]
-    name, lat, lon = cities[_seed_int(val, "geo") % len(cities)]
-    # Use 'lng' (the Location entity schema key the map view reads), not 'lon',
-    # so transform-created Location nodes actually render on the map.
-    ent = _entity("location", name, {"lat": lat, "lng": lon, "ip": val})
-    return {"entities": [ent], "links": [_link("located_in")]}
-
-
-def transform_to_url(entity, params):
-    """domain -> 2 synthetic URLs served by that domain."""
-    val = entity.get("value", "")
-    paths = ["", "/login", "/about", "/api", "/admin", "/blog"]
-    start = _seed_int(val, "urlstart") % len(paths)
-    entities = []
-    for i in range(2):
-        path = paths[(start + i) % len(paths)]
-        entities.append(_entity("url", f"https://{val}{path}", {"host": val}))
-    return {"entities": entities, "links": [_link("hosts_url") for _ in entities]}
+        word = words[_seed_int(val, f"w{i}") % len(words)]
+        tld = tlds[_seed_int(val, f"t{i}") % len(tlds)]
+        entities.append(_entity("domain", f"{word}{i or ''}{tld}", {"sharedIp": val}))
+    return {"entities": entities, "links": [_link("hosted_on", directed=False) for _ in entities]}
 
 
 def transform_person_to_social(entity, params):
     """person -> 2-3 synthetic social-profile URLs."""
     val = entity.get("value", "")
     slug = "".join(c for c in val.lower() if c.isalnum()) or "user"
-    sites = ["linkedin.com/in", "twitter.com", "github.com", "facebook.com"]
-    count = 2 + (_seed_int(val, "soccount") % 2)  # 2 or 3
+    sites = ["linkedin.com/in", "twitter.com", "github.com", "instagram.com"]
+    count = 2 + (_seed_int(val, "soccount") % 2)
     entities = []
-    for i in range(min(count, len(sites))):
-        site = sites[i]
-        entities.append(
-            _entity("url", f"https://{site}/{slug}", {"profileOf": val, "platform": site.split("/")[0]})
-        )
-    return {"entities": entities, "links": [_link("has_profile") for _ in entities]}
+    for i in range(count):
+        site = sites[_seed_int(val, f"s{i}") % len(sites)]
+        entities.append(_entity("url", f"https://{site}/{slug}", {"platform": site}))
+    return {"entities": entities, "links": [_link("profile") for _ in entities]}
 
 
-# Registry: id -> metadata + runner. input_types declares applicable entity types.
 TRANSFORMS = {
     "to_ip": {
         "name": "Resolve to IP",
-        "description": "Resolve a domain or host to synthetic IPv4 addresses.",
+        "description": "Resolve a domain or host to its A and AAAA records.",
         "input_types": ["domain", "host"],
+        "source": "system DNS",
         "run": transform_to_ip,
-    },
-    "to_emails": {
-        "name": "Find Emails",
-        "description": "Discover synthetic email addresses for a domain or person.",
-        "input_types": ["domain", "person"],
-        "run": transform_to_emails,
     },
     "to_subdomains": {
         "name": "Enumerate Subdomains",
-        "description": "Enumerate synthetic subdomains of a domain.",
+        "description": "Find subdomains named in Certificate Transparency logs.",
         "input_types": ["domain"],
+        "source": "crt.sh, api.certspotter.com",
         "run": transform_to_subdomains,
     },
-    "to_ports": {
-        "name": "Scan Common Ports",
-        "description": "List commonly open ports for an IPv4 host.",
-        "input_types": ["ipv4"],
-        "run": transform_to_ports,
-    },
     "whois": {
-        "name": "WHOIS Lookup",
-        "description": "Return a synthetic registrant person and phone for a domain.",
+        "name": "WHOIS / RDAP Lookup",
+        "description": "Registrar, contact addresses and nameservers for a domain.",
         "input_types": ["domain"],
+        "source": "rdap.org",
         "run": transform_whois,
     },
-    "reverse_ip": {
-        "name": "Reverse IP",
-        "description": "Find synthetic domains that resolve to an IPv4 address.",
-        "input_types": ["ipv4"],
-        "run": transform_reverse_ip,
-    },
     "to_asn": {
-        "name": "IP → Organization (ASN)",
-        "description": "Identify the synthetic network operator / ASN owning an IPv4.",
+        "name": "IP → Organization (RDAP)",
+        "description": "The organisation holding the netblock an address sits in.",
         "input_types": ["ipv4"],
+        "source": "rdap.org",
         "run": transform_to_asn,
     },
     "geolocate": {
         "name": "Geolocate IP",
-        "description": "Return an approximate synthetic location for an IPv4 address.",
+        "description": "Approximate location of an IPv4 address.",
         "input_types": ["ipv4"],
+        "source": "ipwho.is",
         "run": transform_geolocate,
     },
+    "to_ports": {
+        "name": "Known Ports (passive)",
+        "description": "Ports, hostnames and CVEs Shodan has already observed. "
+                       "Sends nothing to the target.",
+        "input_types": ["ipv4"],
+        "source": "internetdb.shodan.io",
+        "run": transform_known_ports,
+    },
     "to_url": {
-        "name": "Domain → URLs",
-        "description": "Enumerate synthetic URLs hosted on a domain.",
+        "name": "Domain → Archived URLs",
+        "description": "URLs under a domain that the Wayback Machine has archived.",
         "input_types": ["domain"],
+        "source": "web.archive.org",
         "run": transform_to_url,
+    },
+    "tcp_scan": {
+        "name": "TCP Connect Scan (active)",
+        "description": "Probe common TCP ports on the target directly. Sends traffic "
+                       "from this server; requires NM_ACTIVE_SCAN=1.",
+        "input_types": ["ipv4"],
+        "source": "direct probe",
+        "active": True,
+        "run": transform_tcp_scan,
+    },
+    "to_emails": {
+        "name": "Find Emails",
+        "description": "Placeholder: invents plausible addresses for a domain or person. "
+                       "No keyless source answers this.",
+        "input_types": ["domain", "person"],
+        "source": "synthetic",
+        "synthetic": True,
+        "run": transform_to_emails,
+    },
+    "reverse_ip": {
+        "name": "Reverse IP",
+        "description": "Placeholder: invents co-hosted domains for an address. "
+                       "No keyless source answers this.",
+        "input_types": ["ipv4"],
+        "source": "synthetic",
+        "synthetic": True,
+        "run": transform_reverse_ip,
     },
     "person_to_social": {
         "name": "Person → Social Profiles",
-        "description": "Discover synthetic social-media profile URLs for a person.",
+        "description": "Placeholder: invents profile URLs for a person. "
+                       "No keyless source answers this.",
         "input_types": ["person"],
+        "source": "synthetic",
+        "synthetic": True,
         "run": transform_person_to_social,
     },
 }
-
-TRANSFORM_DEFAULT_LIMIT = 12
-TRANSFORM_MAX_LIMIT = 50
-
 
 @app.route("/api/transforms", methods=["GET"])
 def api_list_transforms():
@@ -1254,6 +1781,12 @@ def api_list_transforms():
             "name": meta["name"],
             "inputTypes": meta["input_types"],
             "description": meta["description"],
+            "source": meta.get("source", ""),
+            "synthetic": bool(meta.get("synthetic")),
+            "active": bool(meta.get("active")),
+            # An active transform stays listed while disabled so the UI can say
+            # why it is unavailable instead of silently omitting it.
+            "available": (not meta.get("active")) or ACTIVE_SCAN_ENABLED,
         }
         for tid, meta in TRANSFORMS.items()
     ]
@@ -1284,21 +1817,27 @@ def api_run_transform():
             400,
         )
 
-    # Resolve and clamp the result limit.
-    try:
-        limit = int(params.get("limit", TRANSFORM_DEFAULT_LIMIT))
-    except (TypeError, ValueError):
-        limit = TRANSFORM_DEFAULT_LIMIT
-    limit = max(1, min(limit, TRANSFORM_MAX_LIMIT))
+    limit = _result_limit(params)
 
     try:
         result = meta["run"](entity, params)
+    except (TransformInputError, TransformSourceError) as exc:
+        # A refused input or an unreachable source is an expected outcome, not a
+        # crash: the client shows the message, so keep it readable.
+        return json_error(str(exc), exc.status)
     except Exception as exc:  # noqa: BLE001 - return controlled error to client
         return json_error("Transform failed: %s" % exc, 500)
 
     entities = (result.get("entities") or [])[:limit]
     links = (result.get("links") or [])[:limit]
-    return jsonify({"entities": entities, "links": links})
+    return jsonify({
+        "entities": entities,
+        "links": links,
+        # Facts about the entity the transform ran ON, merged onto that node.
+        "sourceProperties": result.get("sourceProperties") or {},
+        "note": result.get("note") or "",
+        "synthetic": bool(meta.get("synthetic")),
+    })
 
 
 # ============================================================================

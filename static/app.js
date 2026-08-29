@@ -3212,7 +3212,10 @@ async function runTransformOnNode(node, transformId, params = {}) {
             return;
         }
         const data = await res.json();
-        mergeTransformResults(node, transformId, data);
+        const added = mergeTransformResults(node, transformId, data);
+        // A transform that reached its source and found nothing is a real
+        // answer; without this it looks identical to a silent failure.
+        if (!added && data.note) alert(data.note);
     } catch (e) {
         alert("Transform failed — is the server running?");
     }
@@ -3227,8 +3230,22 @@ function entityKey(type, value) {
 function mergeTransformResults(sourceNode, transformId, data) {
     const ents = (data && data.entities) || [];
     const links = (data && data.links) || [];
-    if (!ents.length) { return; }
+    const srcProps = (data && data.sourceProperties) || {};
+    const srcKeys = Object.keys(srcProps);
+    if (!ents.length && !srcKeys.length) { return false; }
+    // Synthetic transforms are marked in provenance, not just in the UI: once a
+    // node is in the graph the palette warning is long gone, and an export has
+    // to carry which nodes were fabricated.
+    const provSource = (data && data.synthetic ? "transform:synthetic:" : "transform:") + transformId;
     pushUndo();
+    // Facts about the entity the transform ran ON (a domain's registrar, an
+    // address's ASN) belong on that node, not on a new one.
+    if (srcKeys.length) {
+        sourceNode.properties = Object.assign({}, sourceNode.properties, srcProps);
+        const prov = sourceNode.provenance || (sourceNode.provenance = {});
+        prov.fields = Object.assign({}, prov.fields);
+        srcKeys.forEach(k => { prov.fields[k] = provSource; });
+    }
     const existingByKey = {};
     Object.keys(nodes).forEach(id => {
         const n = nodes[id];
@@ -3244,7 +3261,7 @@ function mergeTransformResults(sourceNode, transformId, data) {
             targetId = createNodeAt(sourceNode.x + Math.cos(angle) * r, sourceNode.y + Math.sin(angle) * r, {
                 entityType: ent.type, value: ent.value, label: ent.value, properties: ent.properties || {}
             });
-            nodes[targetId].provenance = { source: "transform:" + transformId, createdAt: Date.now() };
+            nodes[targetId].provenance = { source: provSource, createdAt: Date.now() };
             existingByKey[key] = targetId;
         }
         const link = links[i] || links[0] || {};
@@ -3255,11 +3272,12 @@ function mergeTransformResults(sourceNode, transformId, data) {
             if (edge) {
                 edge.label = link.label || transformId;
                 edge.directed = link.directed !== false;
-                edge.provenance = { source: "transform:" + transformId, createdAt: Date.now() };
+                edge.provenance = { source: provSource, createdAt: Date.now() };
             }
         }
     });
     render();
+    return true;
 }
 
 // ---------- CONTEXT MENU ----------
@@ -3323,7 +3341,13 @@ svg.addEventListener("contextmenu", e => {
         if (!isNodeSelected(nodeId)) selectNode(nodeId);
         render();
         const n = nodes[nodeId];
-        const tItems = getApplicableTransforms(n).map(t => ({ label: t.name, action: () => runTransformOnNode(n, t.id) }));
+        const tItems = getApplicableTransforms(n).map(t => ({
+            // ⚠ marks a transform that fabricates its results; the menu is the
+            // last place to say so before the nodes are in the graph.
+            label: (t.synthetic ? "⚠ " : "") + t.name,
+            disabled: t.available === false,
+            action: () => runTransformOnNode(n, t.id)
+        }));
         items = [
             { label: "Run transform", submenu: tItems.length ? tItems : [{ label: "(no transforms for this type)", disabled: true }] },
             { separator: true },
@@ -4468,13 +4492,21 @@ function renderTransformsHub() {
         const applies = !sel || !t.inputTypes || !t.inputTypes.length || t.inputTypes.includes(sel.entityType || "generic") || t.inputTypes.includes("*");
         const row = document.createElement("div");
         row.className = "project-row";
+        const available = t.available !== false;
         const label = document.createElement("div");
-        label.innerHTML = `<b>${t.name}</b><br><small class="muted">${t.description || (t.inputTypes || []).join(", ")}</small>`;
+        const tags = [];
+        if (t.synthetic) tags.push('<span class="transform-tag synthetic">synthetic</span>');
+        if (t.active) tags.push('<span class="transform-tag active">active</span>');
+        const source = t.source ? `<br><small class="muted">source: ${t.source}</small>` : "";
+        label.innerHTML = `<b>${t.name}</b> ${tags.join(" ")}<br>`
+            + `<small class="muted">${t.description || (t.inputTypes || []).join(", ")}</small>${source}`;
         const btn = document.createElement("button");
         btn.textContent = "Run";
         btn.style.width = "auto";
-        btn.disabled = !sel || !applies;
-        btn.title = !sel ? "Select a node first" : (applies ? "Run on selected node" : "Not applicable to selected type");
+        btn.disabled = !sel || !applies || !available;
+        btn.title = !available ? "Disabled on this server (set NM_ACTIVE_SCAN=1)"
+            : !sel ? "Select a node first"
+            : (applies ? "Run on selected node" : "Not applicable to selected type");
         btn.addEventListener("click", () => { if (sel) runTransformOnNode(sel, t.id); });
         row.appendChild(label);
         row.appendChild(btn);

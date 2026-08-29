@@ -920,6 +920,23 @@ body.dark .entity-item { background: rgba(15, 23, 42, 0.65); }
 .entity-item .entity-glyph { font-size: 15px; line-height: 1; }
 .entity-item .entity-dot { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
 
+/* Transform tags: synthetic results and active-probe transforms are called out
+   in the hub, since neither is safe to assume from the name alone. */
+.transform-tag {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 999px;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    vertical-align: 1px;
+    border: 1px solid currentColor;
+}
+.transform-tag.synthetic { color: #b45309; }
+.transform-tag.active { color: #b91c1c; }
+body.dark .transform-tag.synthetic { color: #fbbf24; }
+body.dark .transform-tag.active { color: #f87171; }
+
 /* Ranked metric table */
 .rank-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
 .rank-table th, .rank-table td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--section-border); }

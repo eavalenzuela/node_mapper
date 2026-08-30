@@ -139,10 +139,77 @@ const SHAPE_DEFAULTS = {
     swimlane: { width: 200, height: 120, color: "#f2c94c", stroke: "#1f2937" }
 };
 
+// Whether this edge draws its label. An explicit per-label override wins over
+// the ontology default, which in turn only applies in "type" mode.
+function shouldShowEdgeLabel(edge) {
+    if (!edge || !edge.label) return false;
+    const cfg = layoutSettings.edgeLabels || {};
+    if (cfg.mode === "all") return true;
+    if (cfg.mode === "none") return false;
+    const key = String(edge.label).trim();
+    const overrides = cfg.overrides || {};
+    if (Object.prototype.hasOwnProperty.call(overrides, key)) return !!overrides[key];
+    return typeof linkTypeShowsLabel === "function" ? linkTypeShowsLabel(key) : true;
+}
+
+// The labels actually present in this graph, so the panel lists what is on the
+// canvas rather than the whole ontology.
+function edgeLabelsInGraph() {
+    const seen = new Map();
+    edges.forEach(e => {
+        const key = String(e.label || "").trim();
+        if (key) seen.set(key, (seen.get(key) || 0) + 1);
+    });
+    return [...seen.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+function renderEdgeLabelPanel() {
+    const modeSelect = document.getElementById("edge-label-mode");
+    const list = document.getElementById("edge-label-types");
+    if (!modeSelect || !list) return;
+    const cfg = layoutSettings.edgeLabels || { mode: "type", overrides: {} };
+    modeSelect.value = cfg.mode;
+    list.innerHTML = "";
+    // Per-label checkboxes only mean anything in "type" mode.
+    list.hidden = cfg.mode !== "type";
+    if (list.hidden) return;
+
+    const present = edgeLabelsInGraph();
+    if (!present.length) {
+        list.innerHTML = '<small class="muted">No labelled edges in this graph.</small>';
+        return;
+    }
+    present.forEach(([label, count]) => {
+        const row = document.createElement("label");
+        row.className = "checkbox-inline";
+        const box = document.createElement("input");
+        box.type = "checkbox";
+        box.checked = shouldShowEdgeLabel({ label });
+        box.addEventListener("change", () => {
+            const overrides = { ...(layoutSettings.edgeLabels.overrides || {}) };
+            // Drop the override when it matches the ontology again, so the
+            // graph only carries genuine departures from the default.
+            if (box.checked === linkTypeShowsLabel(label)) delete overrides[label];
+            else overrides[label] = box.checked;
+            layoutSettings.edgeLabels.overrides = overrides;
+            saveLayoutSettingsToStorage();
+            render();
+        });
+        row.appendChild(box);
+        row.appendChild(document.createTextNode(` ${label} (${count})`));
+        list.appendChild(row);
+    });
+}
+
 function defaultLayoutSettings() {
     return {
         selectedLayout: "manual",
         edgeRouting: "straight",
+        // "type" consults the link ontology per label; "all"/"none" override it
+        // wholesale. Overrides are per-label and ride with the graph rather than
+        // living in localStorage, so a shared export reads the way its author
+        // arranged it.
+        edgeLabels: { mode: "type", overrides: {} },
         options: {
             force: {
                 iterations: 150,
@@ -223,6 +290,13 @@ function normalizeLayoutSettings(incoming = {}) {
     const payload = incoming || {};
     base.selectedLayout = payload.selectedLayout || payload.type || base.selectedLayout;
     base.edgeRouting = payload.edgeRouting || payload.routing || base.edgeRouting;
+
+    const incomingLabels = payload.edgeLabels || {};
+    base.edgeLabels = {
+        mode: ["type", "all", "none"].includes(incomingLabels.mode) ? incomingLabels.mode : "type",
+        overrides: (incomingLabels.overrides && typeof incomingLabels.overrides === "object")
+            ? { ...incomingLabels.overrides } : {},
+    };
 
     const optionSource = payload.options || payload;
     Object.keys(base.options).forEach(key => {
@@ -3738,7 +3812,7 @@ function renderNow() {
             viewport.appendChild(arrow);
         }
 
-        if (edge.label) {
+        if (shouldShowEdgeLabel(edge)) {
             const mid = getEdgeLabelAnchor(points);
             const text = document.createElementNS(NS, "text");
             text.textContent = edge.label;
@@ -3946,6 +4020,7 @@ function renderNow() {
 // Shared render tail: refresh side panels + minimap + autosave. Called by the
 // main SVG renderer and by every alternate view (canvas/bubble/map/list).
 function finishRenderPanels() {
+    renderEdgeLabelPanel();
     updateNodeEditor();
     updateEdgeEditor();
     updateBoxEditor();
@@ -4986,6 +5061,12 @@ function wireNewControls() {
     document.getElementById("encoding-mode")?.addEventListener("change", applyEncoding);
     document.getElementById("encoding-size")?.addEventListener("change", applyEncoding);
     document.getElementById("toggle-legend")?.addEventListener("change", renderLegend);
+    document.getElementById("edge-label-mode")?.addEventListener("change", e => {
+        layoutSettings.edgeLabels = layoutSettings.edgeLabels || { mode: "type", overrides: {} };
+        layoutSettings.edgeLabels.mode = e.target.value;
+        saveLayoutSettingsToStorage();
+        render();
+    });
 
     // centrality / community / rank
     document.getElementById("compute-centrality")?.addEventListener("click", async () => { await runCentrality(); });

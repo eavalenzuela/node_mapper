@@ -6397,7 +6397,50 @@
         } catch (e) { return null; }
     }
 
-    const EntityRegistry = { ENTITY_TYPES, CATEGORY_ORDER, getEntityType, listEntityTypes, listEntityCategories, validateEntityValue };
+    // Link ontology. Edges carry no type of their own -- the label *is* the
+    // relationship -- so this keys on the label transforms emit.
+    //
+    // showLabel is a default, not a rule: hidden where the target node's own
+    // type already states the relationship AND the edges fan out (21 diamonds
+    // reading CVE-… do not each need "vulnerable_to" written beside them), shown
+    // where the node alone is ambiguous (a port circle reading "5000" says
+    // nothing about what 5000 is) or where the claim is unusual enough that it
+    // must never be silent. Anything absent here shows, so hand-drawn graphs
+    // are unaffected.
+    const LINK_TYPES = {
+        // Target type already says it, and these fan.
+        vulnerable_to: { showLabel: false },
+        has_finding: { showLabel: false },
+        presents_cert: { showLabel: false },
+        // The node alone is ambiguous.
+        open_port: { showLabel: true },
+        // Several relationships reach a domain; the label is what tells them apart.
+        rdns: { showLabel: true },
+        hostname: { showLabel: true },
+        subdomain_of: { showLabel: true },
+        san: { showLabel: true },
+        resolves_to: { showLabel: true },
+        hosts_url: { showLabel: true },
+        // Likewise for organization / email / host targets.
+        registrar: { showLabel: true },
+        netblock_owner: { showLabel: true },
+        nameserver: { showLabel: true },
+        abuse_contact: { showLabel: true },
+        registrant_contact: { showLabel: true },
+        administrative_contact: { showLabel: true },
+        technical_contact: { showLabel: true },
+        located_in: { showLabel: true },
+        // An unusual claim -- two addresses being one machine should never be
+        // asserted silently.
+        same_machine: { showLabel: true },
+    };
+
+    function linkTypeShowsLabel(label) {
+        const type = LINK_TYPES[String(label == null ? "" : label).trim()];
+        return type ? type.showLabel !== false : true;
+    }
+
+    const EntityRegistry = { ENTITY_TYPES, CATEGORY_ORDER, LINK_TYPES, getEntityType, listEntityTypes, listEntityCategories, validateEntityValue, linkTypeShowsLabel };
 
     if (typeof module !== "undefined" && module.exports) {
         module.exports = EntityRegistry;
@@ -6407,5 +6450,7 @@
         global.listEntityTypes = listEntityTypes;
         global.listEntityCategories = listEntityCategories;
         global.validateEntityValue = validateEntityValue;
+        global.LINK_TYPES = LINK_TYPES;
+        global.linkTypeShowsLabel = linkTypeShowsLabel;
     }
 })(typeof window !== "undefined" ? window : this);

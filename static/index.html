@@ -414,6 +414,21 @@
                     Show type legend on canvas
                 </label>
             </div>
+            <div class="subsection">
+                <div class="subsection-header">
+                    <h4>Edge labels</h4>
+                    <small>Which relationships write their name on the canvas.</small>
+                </div>
+                <select id="edge-label-mode">
+                    <option value="type">By relationship type</option>
+                    <option value="all">Always show</option>
+                    <option value="none">Never show</option>
+                </select>
+                <div id="edge-label-types"></div>
+                <small>Defaults hide a label the target node already implies —
+                    a CVE diamond needs no "vulnerable_to" beside it. Ticks here
+                    travel with the graph.</small>
+            </div>
         </div>
     </div>
     </div>

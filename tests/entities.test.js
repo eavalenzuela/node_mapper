@@ -49,3 +49,30 @@ test("all entity ids are unique and shapes are valid", () => {
     const shapes = new Set(["circle", "rect", "rounded", "diamond", "cylinder", "swimlane"]);
     E.listEntityTypes().forEach(t => assert.ok(shapes.has(t.shape), "bad shape: " + t.id));
 });
+
+test("link ontology hides labels the target node already implies", () => {
+    // A red diamond reading CVE-2026-3497 does not also need "vulnerable_to"
+    // written beside it, and these are exactly the edges that fan out widest.
+    ["vulnerable_to", "has_finding", "presents_cert"].forEach(l =>
+        assert.strictEqual(E.linkTypeShowsLabel(l), false, l + " should be hidden"));
+});
+
+test("link ontology keeps labels the node alone cannot convey", () => {
+    // A port circle reading "5000" says nothing about what 5000 is; several
+    // different relationships all land on a domain node; and two addresses
+    // being one machine is too strong a claim to assert silently.
+    ["open_port", "rdns", "subdomain_of", "san", "hostname", "same_machine",
+     "registrar", "netblock_owner"].forEach(l =>
+        assert.strictEqual(E.linkTypeShowsLabel(l), true, l + " should be shown"));
+});
+
+test("labels outside the ontology still show", () => {
+    // Hand-drawn graphs must be unaffected by any of this.
+    ["Depends on", "", null, undefined, "  "].forEach(l =>
+        assert.strictEqual(E.linkTypeShowsLabel(l), true, "unknown label should show: " + l));
+});
+
+test("every link type declares an explicit showLabel", () => {
+    Object.entries(E.LINK_TYPES).forEach(([name, spec]) =>
+        assert.strictEqual(typeof spec.showLabel, "boolean", name + " needs a boolean showLabel"));
+});
